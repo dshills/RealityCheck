@@ -126,12 +126,23 @@ func needsRepair(errs []ValidationError) bool {
 // `.*?` (not `.+?`) to allow empty bodies inside fences.
 var fenceRe = regexp.MustCompile("(?s)^(?:`{3}|~{3})[^\\n]*\\n(.*?)(?:`{3}|~{3})\\s*$")
 
+// openFenceRe matches only an opening fence line (no closing fence required).
+// Used to strip orphaned opening fences from truncated responses.
+var openFenceRe = regexp.MustCompile("^(?:`{3}|~{3})[^\\n]*\\n")
+
 // stripMarkdownFences removes leading/trailing markdown code fences that LLMs
 // sometimes wrap around JSON output (e.g., "```json\n...\n```").
+// If only an opening fence is present (e.g., the response was truncated before
+// the closing fence), the opening line is stripped so that the JSON content can
+// still be parsed.
 func stripMarkdownFences(s string) string {
 	s = strings.TrimSpace(s)
 	if m := fenceRe.FindStringSubmatch(s); m != nil {
 		return strings.TrimSpace(m[1])
+	}
+	// Handle truncated fenced responses: strip the opening fence line only.
+	if loc := openFenceRe.FindStringIndex(s); loc != nil {
+		return strings.TrimSpace(s[loc[1]:])
 	}
 	return s
 }
@@ -147,14 +158,21 @@ func ValidateResponse(raw string, index codeindex.Index) (*schema.PartialReport,
 
 	raw = stripMarkdownFences(raw)
 
-	// 1. JSON parse.
+	// 1. JSON parse. If parsing fails due to invalid escape sequences (common
+	// when LLM output includes regex patterns like \d+ inside JSON strings),
+	// attempt a one-shot sanitization before giving up.
 	var report schema.PartialReport
 	if err := json.Unmarshal([]byte(raw), &report); err != nil {
-		errs = append(errs, ValidationError{
-			Field:   "json_parse",
-			Message: err.Error(),
-		})
-		return nil, errs
+		fixed := fixInvalidJSONEscapes(raw)
+		if err2 := json.Unmarshal([]byte(fixed), &report); err2 != nil {
+			errs = append(errs, ValidationError{
+				Field:   "json_parse",
+				Message: err.Error(),
+			})
+			return nil, errs
+		}
+		// Sanitized successfully; continue with the fixed payload.
+		raw = fixed
 	}
 
 	// 2. Required field check.
@@ -206,6 +224,19 @@ var (
 	driftIDRe     = regexp.MustCompile(`^DRIFT-\d+$`)
 	violationIDRe = regexp.MustCompile(`^VIOLATION-\d+$`)
 )
+
+// invalidJSONEscapeRe matches a backslash followed by any character that is not
+// a valid JSON string escape character ("\/bfnrtu). LLMs sometimes emit regex
+// patterns (e.g. \d+, \w+) unescaped inside JSON strings; this sanitizer
+// converts them to properly double-escaped sequences (\\d, \\w, etc.) so that
+// the JSON parser accepts the response.
+var invalidJSONEscapeRe = regexp.MustCompile(`\\([^"\\/bfnrtu])`)
+
+// fixInvalidJSONEscapes replaces invalid JSON escape sequences in s with their
+// correctly double-escaped equivalents.
+func fixInvalidJSONEscapes(s string) string {
+	return invalidJSONEscapeRe.ReplaceAllString(s, `\\$1`)
+}
 
 // validateEnums checks that all enum fields contain valid constants.
 func validateEnums(r *schema.PartialReport) []ValidationError {

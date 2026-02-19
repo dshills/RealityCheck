@@ -47,6 +47,9 @@ func (p *googleProvider) Complete(
 	m.MaxOutputTokens = &maxOut
 	temp32 := float32(temperature)
 	m.Temperature = &temp32
+	// Force JSON output mode to prevent the model from wrapping the response
+	// in markdown code fences.
+	m.ResponseMIMEType = "application/json"
 
 	resp, err := m.GenerateContent(ctx, genai.Text(userPrompt))
 	if err != nil {

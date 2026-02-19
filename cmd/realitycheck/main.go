@@ -416,7 +416,7 @@ func defaultModelForProvider(provider string) string {
 	case "openai":
 		return "gpt-4o"
 	case "google":
-		return "gemini-2.0-flash"
+		return "gemini-2.5-flash"
 	default:
 		return "claude-opus-4-6"
 	}

@@ -74,7 +74,7 @@ realitycheck check [path] [flags]
 --strict                   No inferred intent; escalate drift severities
 --fail-on <verdict>        Exit 2 if verdict >= level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION)
 --severity-threshold <s>   Filter output to findings at or above INFO|WARN|CRITICAL
---model <id>               Model ID (default: claude-opus-4-6 / gpt-4o / gemini-2.0-flash per provider)
+--model <id>               Model ID (default: claude-opus-4-6 / gpt-4o / gemini-2.5-flash per provider)
 --offline                  Skip API key pre-flight check
 --verbose                  Print execution trace to stderr
 --debug                    Dump assembled prompt to stderr
