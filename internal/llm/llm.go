@@ -33,10 +33,11 @@ type Provider interface {
 // NewProvider is the factory for creating LLM providers. It is a package-level
 // variable so tests can replace it with a mock without modifying the call site.
 // Tests must restore the original value; use t.Cleanup to do so safely.
-var NewProvider func(model string) (Provider, error) = defaultNewProvider
+var NewProvider func(providerName, model string) (Provider, error) = defaultNewProvider
 
 // Options configures an Analyze call.
 type Options struct {
+	Provider    string
 	Strict      bool
 	MaxTokens   int
 	Temperature float64
@@ -64,7 +65,7 @@ func Analyze(
 	prof profile.Profile,
 	opts Options,
 ) (*schema.PartialReport, error) {
-	provider, err := NewProvider(opts.Model)
+	provider, err := NewProvider(opts.Provider, opts.Model)
 	if err != nil {
 		return nil, fmt.Errorf("llm: create provider: %w", err)
 	}
@@ -455,6 +456,22 @@ func buildRepairPrompt(originalUserPrompt, previousResponse string, errs []Valid
 	return sb.String()
 }
 
+// ── Provider dispatch ─────────────────────────────────────────────────────────
+
+// defaultNewProvider dispatches to the appropriate provider implementation.
+func defaultNewProvider(providerName, model string) (Provider, error) {
+	switch strings.ToLower(providerName) {
+	case "anthropic", "":
+		return newAnthropicProvider(model)
+	case "openai":
+		return newOpenAIProvider(model)
+	case "google":
+		return newGoogleProvider(model)
+	default:
+		return nil, fmt.Errorf("llm: unknown provider %q", providerName)
+	}
+}
+
 // ── Anthropic provider ───────────────────────────────────────────────────────
 
 // anthropicProvider implements Provider using the Anthropic SDK.
@@ -464,7 +481,7 @@ type anthropicProvider struct {
 	model  string
 }
 
-func defaultNewProvider(model string) (Provider, error) {
+func newAnthropicProvider(model string) (Provider, error) {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("llm: ANTHROPIC_API_KEY environment variable not set")

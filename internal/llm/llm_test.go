@@ -85,7 +85,7 @@ func testIndex() codeindex.Index {
 func installMock(t *testing.T, mp *mockProvider) {
 	t.Helper()
 	orig := NewProvider
-	NewProvider = func(_ string) (Provider, error) { return mp, nil }
+	NewProvider = func(_, _ string) (Provider, error) { return mp, nil }
 	t.Cleanup(func() { NewProvider = orig })
 }
 

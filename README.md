@@ -46,7 +46,7 @@ cd realitycheck
 go build ./cmd/realitycheck
 ```
 
-Requires `ANTHROPIC_API_KEY` to be set.
+Requires `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY` to be set, depending on the provider used.
 
 ---
 
@@ -70,11 +70,12 @@ realitycheck check [path] [flags]
 --format json|md           Output format (default: json)
 --out <file>               Write output to file instead of stdout
 --profile <name>           Enforcement profile: general, strict-api, data-pipeline, library
+--provider <name>          LLM provider: anthropic, openai, google (default: anthropic)
 --strict                   No inferred intent; escalate drift severities
 --fail-on <verdict>        Exit 2 if verdict >= level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION)
 --severity-threshold <s>   Filter output to findings at or above INFO|WARN|CRITICAL
---model <id>               Anthropic model ID (default: claude-opus-4-6)
---offline                  Skip ANTHROPIC_API_KEY pre-flight check
+--model <id>               Model ID (default: claude-opus-4-6 / gpt-4o / gemini-2.0-flash per provider)
+--offline                  Skip API key pre-flight check
 --verbose                  Print execution trace to stderr
 --debug                    Dump assembled prompt to stderr
 ```
@@ -88,6 +89,10 @@ realitycheck check \
   --code-root . \
   --format md \
   --fail-on DRIFT_DETECTED
+
+# Use OpenAI or Google for a second opinion
+realitycheck check --spec SPEC.md --plan PLAN.md --code-root . --provider openai --format md
+realitycheck check --spec SPEC.md --plan PLAN.md --code-root . --provider google --format md
 ```
 
 ---

@@ -73,6 +73,7 @@ type checkFlags struct {
 	format            string
 	out               string
 	profileName       string
+	provider          string
 	strict            bool
 	failOn            string
 	severityThreshold string
@@ -106,13 +107,14 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.format, "format", "json", "output format: json or md")
 	cmd.Flags().StringVar(&f.out, "out", "", "write output to this file instead of stdout")
 	cmd.Flags().StringVar(&f.profileName, "profile", "general", "enforcement profile name")
+	cmd.Flags().StringVar(&f.provider, "provider", "anthropic", "LLM provider: anthropic, openai, google")
 	cmd.Flags().BoolVar(&f.strict, "strict", false, "strict mode: escalate drift severities and treat unclear coverage as NOT_IMPLEMENTED")
 	cmd.Flags().StringVar(&f.failOn, "fail-on", "", "exit 2 if verdict >= this level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION)")
 	cmd.Flags().StringVar(&f.severityThreshold, "severity-threshold", "", "filter findings below this severity from output (INFO|WARN|CRITICAL); does not affect scoring")
 	cmd.Flags().IntVar(&f.maxTokens, "max-tokens", 4096, "maximum tokens for LLM response")
 	cmd.Flags().Float64Var(&f.temperature, "temperature", 0.2, "LLM temperature")
-	cmd.Flags().StringVar(&f.model, "model", "claude-opus-4-6", "Anthropic model ID")
-	cmd.Flags().BoolVar(&f.offline, "offline", false, "skip ANTHROPIC_API_KEY pre-flight check; use when operating with an injected mock provider or cached data")
+	cmd.Flags().StringVar(&f.model, "model", "", "model ID (default varies by provider: claude-opus-4-6 / gpt-4o / gemini-2.0-flash)")
+	cmd.Flags().BoolVar(&f.offline, "offline", false, "skip API key pre-flight check; use when operating with an injected mock provider or cached data")
 	cmd.Flags().BoolVar(&f.verbose, "verbose", false, "print execution trace to stderr")
 	cmd.Flags().BoolVar(&f.debug, "debug", false, "dump assembled prompt to stderr")
 
@@ -148,6 +150,17 @@ func runCheck(ctx context.Context, f checkFlags) error {
 	// Normalize flag values to uppercase for case-insensitive matching.
 	f.failOn = strings.ToUpper(f.failOn)
 	f.severityThreshold = strings.ToUpper(f.severityThreshold)
+	// Validate provider.
+	switch strings.ToLower(f.provider) {
+	case "anthropic", "openai", "google":
+		// valid
+	default:
+		return &exitError{exitCodeBadInput, fmt.Sprintf("error: --provider value %q is not valid (anthropic|openai|google)", f.provider)}
+	}
+	// Apply default model for the selected provider if none was specified.
+	if f.model == "" {
+		f.model = defaultModelForProvider(f.provider)
+	}
 	if f.failOn != "" {
 		if verdict.VerdictOrdinal(schema.Verdict(f.failOn)) < 0 {
 			return &exitError{exitCodeBadInput, fmt.Sprintf("error: --fail-on value %q is not a valid verdict", f.failOn)}
@@ -164,8 +177,9 @@ func runCheck(ctx context.Context, f checkFlags) error {
 	// Pre-flight API key check. When --offline is set the check is skipped
 	// (offline mode indicates a no-network or mock-provider environment).
 	// Per PLAN §7b: exit 4 if key is absent and --offline is false.
-	if !f.offline && os.Getenv("ANTHROPIC_API_KEY") == "" {
-		return &exitError{exitCodeAPIError, "error: ANTHROPIC_API_KEY is not set; set the environment variable or pass --offline to skip this check"}
+	if !f.offline && os.Getenv(providerAPIKeyEnvVar(f.provider)) == "" {
+		envVar := providerAPIKeyEnvVar(f.provider)
+		return &exitError{exitCodeAPIError, fmt.Sprintf("error: %s is not set; set the environment variable or pass --offline to skip this check", envVar)}
 	}
 
 	logVerbose := func(msg string) {
@@ -207,6 +221,7 @@ func runCheck(ctx context.Context, f checkFlags) error {
 
 	// Step 6: Build LLM options (--debug causes prompt to be dumped to stderr inside llm.Analyze).
 	opts := llm.Options{
+		Provider:    f.provider,
 		Strict:      f.strict,
 		MaxTokens:   f.maxTokens,
 		Temperature: f.temperature,
@@ -381,4 +396,28 @@ func filterViolations(violations []schema.Violation, threshold schema.Severity) 
 		}
 	}
 	return out
+}
+
+// providerAPIKeyEnvVar returns the environment variable name for the given provider's API key.
+func providerAPIKeyEnvVar(provider string) string {
+	switch strings.ToLower(provider) {
+	case "openai":
+		return "OPENAI_API_KEY"
+	case "google":
+		return "GOOGLE_API_KEY"
+	default:
+		return "ANTHROPIC_API_KEY"
+	}
+}
+
+// defaultModelForProvider returns the default model ID for the given provider.
+func defaultModelForProvider(provider string) string {
+	switch strings.ToLower(provider) {
+	case "openai":
+		return "gpt-4o"
+	case "google":
+		return "gemini-2.0-flash"
+	default:
+		return "claude-opus-4-6"
+	}
 }

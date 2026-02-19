@@ -77,7 +77,7 @@ func (e *errorProvider) Complete(ctx context.Context, system, user string, maxTo
 func injectMock(t *testing.T, responses []string) {
 	t.Helper()
 	orig := llm.NewProvider
-	llm.NewProvider = func(model string) (llm.Provider, error) {
+	llm.NewProvider = func(provider, model string) (llm.Provider, error) {
 		return &mockMultiProvider{responses: responses}, nil
 	}
 	t.Cleanup(func() { llm.NewProvider = orig })
@@ -86,7 +86,7 @@ func injectMock(t *testing.T, responses []string) {
 func injectErrProvider(t *testing.T) {
 	t.Helper()
 	orig := llm.NewProvider
-	llm.NewProvider = func(model string) (llm.Provider, error) {
+	llm.NewProvider = func(provider, model string) (llm.Provider, error) {
 		return &errorProvider{}, nil
 	}
 	t.Cleanup(func() { llm.NewProvider = orig })
@@ -102,6 +102,7 @@ func baseFlags(t *testing.T, fixture string) checkFlags {
 		format:      "json",
 		out:         tempOut(t),
 		profileName: "general",
+		provider:    "anthropic",
 		model:       "mock",
 		maxTokens:   4096,
 		temperature: 0.2,

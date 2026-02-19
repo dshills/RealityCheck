@@ -67,8 +67,8 @@ const violationResponse = `{
   "meta": {"model":"mock","temperature":0.2}
 }`
 
-func newMockProvider(response string) func(model string) (Provider, error) {
-	return func(model string) (Provider, error) {
+func newMockProvider(response string) func(string, string) (Provider, error) {
+	return func(_, _ string) (Provider, error) {
 		return &singleResponseProvider{response: response}, nil
 	}
 }
@@ -103,7 +103,7 @@ func runGolden(t *testing.T, dir, response string) (*schema.PartialReport, error
 	if err != nil {
 		t.Fatalf("load profile: %v", err)
 	}
-	opts := Options{MaxTokens: 4096, Temperature: 0.2, Model: "mock"}
+	opts := Options{Provider: "mock", MaxTokens: 4096, Temperature: 0.2, Model: "mock"}
 	return Analyze(context.Background(), specItems, planItems, idx, prof, opts)
 }
 
