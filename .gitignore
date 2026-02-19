@@ -1,0 +1,28 @@
+# Binaries
+realitycheck
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test output
+*.test
+*.out
+
+# Go build cache
+/vendor/
+
+# Environment files
+.env
+.env.*
+
+# Editor/IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Output files
+*.realitycheck-*.tmp
