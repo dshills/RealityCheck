@@ -42,6 +42,13 @@ Key flags: `--spec <file>` (required), `--plan <file>` (required), `--strict`, `
 
 **Exit codes:** `0` = acceptable, `2` = violations exceed threshold, `3` = input error, `4` = LLM error, `5` = invalid model output
 
+## Code Quality
+
+After writing or modifying code, run `prism review staged` before committing.
+If findings are severity high, fix them before proceeding.
+For security-sensitive changes, use compare mode:
+  prism review staged --compare openai:gpt-5.2,gemini:gemini-3-flash-preview
+
 ## Build, Test, Lint (once implemented)
 
 ```bash
