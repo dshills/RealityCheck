@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,6 +95,7 @@ func newCheckCmd() *cobra.Command {
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			applyEnvDefaults(cmd, &f)
 			if len(args) > 0 && f.codeRoot == "" {
 				f.codeRoot = args[0]
 			}
@@ -104,21 +106,76 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.specFile, "spec", "", "path to SPEC.md (required)")
 	cmd.Flags().StringVar(&f.planFile, "plan", "", "path to PLAN.md (required)")
 	cmd.Flags().StringVar(&f.codeRoot, "code-root", "", "root of the code to analyze (default: path arg or cwd)")
-	cmd.Flags().StringVar(&f.format, "format", "json", "output format: json or md")
+	cmd.Flags().StringVar(&f.format, "format", "json", "output format: json or md (env: REALITYCHECK_FORMAT)")
 	cmd.Flags().StringVar(&f.out, "out", "", "write output to this file instead of stdout")
-	cmd.Flags().StringVar(&f.profileName, "profile", "general", "enforcement profile name")
-	cmd.Flags().StringVar(&f.provider, "provider", "anthropic", "LLM provider: anthropic, openai, google")
-	cmd.Flags().BoolVar(&f.strict, "strict", false, "strict mode: escalate drift severities and treat unclear coverage as NOT_IMPLEMENTED")
-	cmd.Flags().StringVar(&f.failOn, "fail-on", "", "exit 2 if verdict >= this level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION)")
-	cmd.Flags().StringVar(&f.severityThreshold, "severity-threshold", "", "filter findings below this severity from output (INFO|WARN|CRITICAL); does not affect scoring")
-	cmd.Flags().IntVar(&f.maxTokens, "max-tokens", 4096, "maximum tokens for LLM response")
-	cmd.Flags().Float64Var(&f.temperature, "temperature", 0.2, "LLM temperature")
-	cmd.Flags().StringVar(&f.model, "model", "", "model ID (default varies by provider: claude-opus-4-6 / gpt-4o / gemini-2.0-flash)")
+	cmd.Flags().StringVar(&f.profileName, "profile", "general", "enforcement profile name (env: REALITYCHECK_PROFILE)")
+	cmd.Flags().StringVar(&f.provider, "provider", "anthropic", "LLM provider: anthropic, openai, google (env: REALITYCHECK_LLM_PROVIDER)")
+	cmd.Flags().BoolVar(&f.strict, "strict", false, "strict mode: escalate drift severities and treat unclear coverage as NOT_IMPLEMENTED (env: REALITYCHECK_STRICT)")
+	cmd.Flags().StringVar(&f.failOn, "fail-on", "", "exit 2 if verdict >= this level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION) (env: REALITYCHECK_FAIL_ON)")
+	cmd.Flags().StringVar(&f.severityThreshold, "severity-threshold", "", "filter findings below this severity from output (INFO|WARN|CRITICAL); does not affect scoring (env: REALITYCHECK_SEVERITY_THRESHOLD)")
+	cmd.Flags().IntVar(&f.maxTokens, "max-tokens", 4096, "maximum tokens for LLM response (env: REALITYCHECK_LLM_MAX_TOKENS)")
+	cmd.Flags().Float64Var(&f.temperature, "temperature", 0.2, "LLM temperature (env: REALITYCHECK_LLM_TEMPERATURE)")
+	cmd.Flags().StringVar(&f.model, "model", "", "model ID (default varies by provider: claude-opus-4-6 / gpt-4o / gemini-2.0-flash) (env: REALITYCHECK_LLM_MODEL)")
 	cmd.Flags().BoolVar(&f.offline, "offline", false, "skip API key pre-flight check; use when operating with an injected mock provider or cached data")
 	cmd.Flags().BoolVar(&f.verbose, "verbose", false, "print execution trace to stderr")
 	cmd.Flags().BoolVar(&f.debug, "debug", false, "dump assembled prompt to stderr")
 
 	return cmd
+}
+
+// applyEnvDefaults applies REALITYCHECK_* environment variables to flags that
+// were not explicitly set on the command line. CLI flags always take precedence.
+//
+// Supported env vars:
+//
+//	REALITYCHECK_LLM_PROVIDER        --provider
+//	REALITYCHECK_LLM_MODEL           --model
+//	REALITYCHECK_LLM_TEMPERATURE     --temperature
+//	REALITYCHECK_LLM_MAX_TOKENS      --max-tokens
+//	REALITYCHECK_FORMAT              --format
+//	REALITYCHECK_PROFILE             --profile
+//	REALITYCHECK_FAIL_ON             --fail-on
+//	REALITYCHECK_SEVERITY_THRESHOLD  --severity-threshold
+//	REALITYCHECK_STRICT              --strict (true/1/yes to enable)
+func applyEnvDefaults(cmd *cobra.Command, f *checkFlags) {
+	envStr := func(flagName string, dst *string, envKey string) {
+		if !cmd.Flags().Changed(flagName) {
+			if v := os.Getenv(envKey); v != "" {
+				*dst = v
+			}
+		}
+	}
+	envStr("provider", &f.provider, "REALITYCHECK_LLM_PROVIDER")
+	envStr("model", &f.model, "REALITYCHECK_LLM_MODEL")
+	envStr("format", &f.format, "REALITYCHECK_FORMAT")
+	envStr("profile", &f.profileName, "REALITYCHECK_PROFILE")
+	envStr("fail-on", &f.failOn, "REALITYCHECK_FAIL_ON")
+	envStr("severity-threshold", &f.severityThreshold, "REALITYCHECK_SEVERITY_THRESHOLD")
+
+	if !cmd.Flags().Changed("temperature") {
+		if v := os.Getenv("REALITYCHECK_LLM_TEMPERATURE"); v != "" {
+			if t, err := strconv.ParseFloat(v, 64); err == nil {
+				f.temperature = t
+			}
+		}
+	}
+	if !cmd.Flags().Changed("max-tokens") {
+		if v := os.Getenv("REALITYCHECK_LLM_MAX_TOKENS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				f.maxTokens = n
+			}
+		}
+	}
+	if !cmd.Flags().Changed("strict") {
+		if v := os.Getenv("REALITYCHECK_STRICT"); v != "" {
+			switch strings.ToLower(v) {
+			case "true", "1", "yes":
+				f.strict = true
+			case "false", "0", "no":
+				f.strict = false
+			}
+		}
+	}
 }
 
 func runCheck(ctx context.Context, f checkFlags) error {
