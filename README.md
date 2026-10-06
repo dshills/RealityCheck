@@ -75,6 +75,8 @@ realitycheck check [path] [flags]
 --fail-on <verdict>        Exit 2 if verdict >= level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION)
 --severity-threshold <s>   Filter output to findings at or above INFO|WARN|CRITICAL
 --model <id>               Model ID (default: claude-opus-4-6 / gpt-4o / gemini-2.5-flash per provider)
+--max-tokens <n>           Output token limit (default: 16384)
+--structured-output=false  Send the schema in the prompt only, for models that reject native JSON schema
 --offline                  Skip API key pre-flight check
 --verbose                  Print execution trace to stderr
 --debug                    Dump assembled prompt to stderr
@@ -133,6 +135,15 @@ item it contradicts. The tool fills in the rest:
 A violation whose `spec_id` is missing or does not name a SPEC item is kept,
 but its `spec_id` is cleared and its evidence is downgraded to `LOW`.
 
+### Structured output
+
+By default the report schema is passed to the provider's native structured
+output: Anthropic `output_config.format`, OpenAI strict `json_schema`, and
+Gemini `responseSchema` with explicit property ordering. Each provider also
+reports when it stopped at `--max-tokens`, and the tool uses that instead of
+guessing from broken JSON. Anthropic requests are streamed, so raising
+`--max-tokens` past the SDK's non-streaming limit works.
+
 ### Coverage completeness
 
 Every parsed spec and plan item gets exactly one coverage entry in the report.
@@ -162,7 +173,7 @@ violations are complete is never trusted and goes through JSON repair instead.
 | `0` | Success |
 | `2` | `--fail-on` threshold met |
 | `3` | Input error (missing flags, file not found) |
-| `4` | LLM / provider error |
+| `4` | LLM / provider error, or a response cut off at `--max-tokens` before it carried complete findings (the message says to raise `--max-tokens`) |
 | `5` | LLM produced unrecoverable invalid output |
 
 ### JSON output (excerpt)

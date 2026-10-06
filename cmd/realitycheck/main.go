@@ -26,6 +26,11 @@ import (
 
 const version = "0.1.0"
 
+// defaultMaxTokens is the default output token limit. 4096 could not hold a
+// report for a real spec; 16384 fits several hundred coverage entries and is
+// within every default model's output limit.
+const defaultMaxTokens = 16384
+
 // Process exit codes as defined in SPEC §6 and PLAN Step 12.
 const (
 	exitCodeGeneral   = 1 // unexpected/internal error
@@ -83,6 +88,7 @@ type checkFlags struct {
 	temperature       float64
 	model             string
 	offline           bool
+	structuredOutput  bool
 	verbose           bool
 	debug             bool
 }
@@ -114,10 +120,11 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&f.strict, "strict", false, "strict mode: escalate drift severities and treat unclear coverage as NOT_IMPLEMENTED (env: REALITYCHECK_STRICT)")
 	cmd.Flags().StringVar(&f.failOn, "fail-on", "", "exit 2 if verdict >= this level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION) (env: REALITYCHECK_FAIL_ON)")
 	cmd.Flags().StringVar(&f.severityThreshold, "severity-threshold", "", "filter findings below this severity from output (INFO|WARN|CRITICAL); does not affect scoring (env: REALITYCHECK_SEVERITY_THRESHOLD)")
-	cmd.Flags().IntVar(&f.maxTokens, "max-tokens", 4096, "maximum tokens for LLM response (env: REALITYCHECK_LLM_MAX_TOKENS)")
+	cmd.Flags().IntVar(&f.maxTokens, "max-tokens", defaultMaxTokens, "maximum tokens for LLM response (env: REALITYCHECK_LLM_MAX_TOKENS)")
 	cmd.Flags().Float64Var(&f.temperature, "temperature", 0.2, "LLM temperature (env: REALITYCHECK_LLM_TEMPERATURE)")
 	cmd.Flags().StringVar(&f.model, "model", "", "model ID (default varies by provider: claude-opus-4-6 / gpt-4o / gemini-2.0-flash) (env: REALITYCHECK_LLM_MODEL)")
 	cmd.Flags().BoolVar(&f.offline, "offline", false, "skip API key pre-flight check; use when operating with an injected mock provider or cached data")
+	cmd.Flags().BoolVar(&f.structuredOutput, "structured-output", true, "constrain model output with the provider's native JSON schema support; disable for models that reject it (env: REALITYCHECK_STRUCTURED_OUTPUT)")
 	cmd.Flags().BoolVar(&f.verbose, "verbose", false, "print execution trace to stderr")
 	cmd.Flags().BoolVar(&f.debug, "debug", false, "dump assembled prompt to stderr")
 
@@ -138,6 +145,7 @@ func newCheckCmd() *cobra.Command {
 //	REALITYCHECK_FAIL_ON             --fail-on
 //	REALITYCHECK_SEVERITY_THRESHOLD  --severity-threshold
 //	REALITYCHECK_STRICT              --strict (true/1/yes to enable)
+//	REALITYCHECK_STRUCTURED_OUTPUT   --structured-output (false/0/no to disable)
 func applyEnvDefaults(cmd *cobra.Command, f *checkFlags) {
 	envStr := func(flagName string, dst *string, envKey string) {
 		if !cmd.Flags().Changed(flagName) {
@@ -167,16 +175,19 @@ func applyEnvDefaults(cmd *cobra.Command, f *checkFlags) {
 			}
 		}
 	}
-	if !cmd.Flags().Changed("strict") {
-		if v := os.Getenv("REALITYCHECK_STRICT"); v != "" {
-			switch strings.ToLower(v) {
-			case "true", "1", "yes":
-				f.strict = true
-			case "false", "0", "no":
-				f.strict = false
-			}
+	envBool := func(flagName string, dst *bool, envKey string) {
+		if cmd.Flags().Changed(flagName) {
+			return
+		}
+		switch strings.ToLower(os.Getenv(envKey)) {
+		case "true", "1", "yes":
+			*dst = true
+		case "false", "0", "no":
+			*dst = false
 		}
 	}
+	envBool("strict", &f.strict, "REALITYCHECK_STRICT")
+	envBool("structured-output", &f.structuredOutput, "REALITYCHECK_STRUCTURED_OUTPUT")
 }
 
 func runCheck(ctx context.Context, f checkFlags) error {
@@ -279,12 +290,13 @@ func runCheck(ctx context.Context, f checkFlags) error {
 
 	// Step 6: Build LLM options (--debug causes prompt to be dumped to stderr inside llm.Analyze).
 	opts := llm.Options{
-		Provider:    f.provider,
-		Strict:      f.strict,
-		MaxTokens:   f.maxTokens,
-		Temperature: f.temperature,
-		Model:       f.model,
-		Debug:       f.debug,
+		Provider:         f.provider,
+		Strict:           f.strict,
+		MaxTokens:        f.maxTokens,
+		Temperature:      f.temperature,
+		Model:            f.model,
+		Debug:            f.debug,
+		StructuredOutput: f.structuredOutput,
 		Warnf: func(format string, args ...any) {
 			if f.verbose || f.debug {
 				fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
@@ -298,6 +310,9 @@ func runCheck(ctx context.Context, f checkFlags) error {
 	if err != nil {
 		if errors.Is(err, llm.ErrInvalidModelOutput) {
 			return &exitError{exitCodeBadOutput, fmt.Sprintf("error: %v", err)}
+		}
+		if errors.Is(err, llm.ErrResponseTruncated) {
+			return &exitError{exitCodeAPIError, fmt.Sprintf("error: %v; raise --max-tokens (currently %d)", err, f.maxTokens)}
 		}
 		return &exitError{exitCodeAPIError, fmt.Sprintf("error: LLM: %v", err)}
 	}

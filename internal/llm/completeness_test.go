@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -354,5 +355,108 @@ func TestAnalyze_DerivesReferencesAndIgnoresModelMeta(t *testing.T) {
 	m := r.Meta
 	if m.Model != "test-model" || m.Temperature != 0.2 || !m.CoverageComplete || m.UnevaluatedCount != 0 || m.ResponseTruncated {
 		t.Errorf("meta must come from the tool, got %+v", m)
+	}
+}
+
+// generatorProvider is a Generator test double that reports truncation and
+// records the schema of each request.
+type generatorProvider struct {
+	responses []Response
+	requests  []Request
+}
+
+func (g *generatorProvider) Complete(context.Context, string, string, int, float64) (string, error) {
+	return "", fmt.Errorf("Complete must not be called when Generate is available")
+}
+
+func (g *generatorProvider) Generate(_ context.Context, req Request) (Response, error) {
+	i := len(g.requests)
+	g.requests = append(g.requests, req)
+	if i >= len(g.responses) {
+		return Response{}, fmt.Errorf("generatorProvider: unexpected call %d", i+1)
+	}
+	return g.responses[i], nil
+}
+
+func installGenerator(t *testing.T, g *generatorProvider) {
+	t.Helper()
+	orig := NewProvider
+	NewProvider = func(_, _ string) (Provider, error) { return g, nil }
+	t.Cleanup(func() { NewProvider = orig })
+}
+
+func analyzeWith(t *testing.T, specItems, planItems []spec.Item, structured bool) (*schema.PartialReport, error) {
+	t.Helper()
+	return Analyze(context.Background(), specItems, planItems, testIndex(), loadGeneralProfile(t),
+		Options{MaxTokens: 123, Temperature: 0.2, Model: "test-model", StructuredOutput: structured})
+}
+
+func TestAnalyze_TruncatedUnsalvageable_FailsFastWithoutRepair(t *testing.T) {
+	g := &generatorProvider{responses: []Response{{Text: `{"drift":[{"id":"DRIFT-001","sev`, Truncated: true}}}
+	installGenerator(t, g)
+
+	_, err := analyzeWith(t, items("SPEC", 1), nil, true)
+	if !errors.Is(err, ErrResponseTruncated) {
+		t.Fatalf("err = %v, want ErrResponseTruncated", err)
+	}
+	if !strings.Contains(err.Error(), "(123)") {
+		t.Errorf("error should name the limit: %v", err)
+	}
+	if len(g.requests) != 1 {
+		t.Errorf("calls = %d, want 1 (no repair of a truncated response)", len(g.requests))
+	}
+}
+
+func TestAnalyze_RepairTruncated_ReportsTruncation(t *testing.T) {
+	g := &generatorProvider{responses: []Response{
+		{Text: "not json"},
+		{Text: `{"drift":[`, Truncated: true},
+	}}
+	installGenerator(t, g)
+
+	_, err := analyzeWith(t, items("SPEC", 1), nil, true)
+	if !errors.Is(err, ErrResponseTruncated) {
+		t.Fatalf("err = %v, want ErrResponseTruncated", err)
+	}
+}
+
+func TestAnalyze_TruncatedFlagWithCompleteJSON_Recorded(t *testing.T) {
+	g := &generatorProvider{responses: []Response{{Text: coverageJSON([]string{"SPEC-001"}, nil), Truncated: true}}}
+	installGenerator(t, g)
+
+	r, err := analyzeWith(t, items("SPEC", 1), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Meta.ResponseTruncated {
+		t.Error("provider-reported truncation should be recorded in meta")
+	}
+}
+
+func TestAnalyze_PassesSchemasOnlyWhenStructured(t *testing.T) {
+	for _, structured := range []bool{true, false} {
+		g := &generatorProvider{responses: []Response{
+			{Text: coverageJSON(nil, nil)}, // incomplete: triggers completion
+			{Text: coverageJSON([]string{"SPEC-001"}, nil)},
+		}}
+		installGenerator(t, g)
+
+		if _, err := analyzeWith(t, items("SPEC", 1), nil, structured); err != nil {
+			t.Fatal(err)
+		}
+		if len(g.requests) != 2 {
+			t.Fatalf("calls = %d, want 2", len(g.requests))
+		}
+		main, completion := g.requests[0].Schema, g.requests[1].Schema
+		if structured {
+			if main != reportSchema || completion != completionOutputSchema {
+				t.Errorf("structured: schemas = %v, %v", main, completion)
+			}
+		} else if main != nil || completion != nil {
+			t.Error("unstructured: no schema should be sent")
+		}
+		if g.requests[0].MaxTokens != 123 {
+			t.Errorf("max tokens = %d", g.requests[0].MaxTokens)
+		}
 	}
 }

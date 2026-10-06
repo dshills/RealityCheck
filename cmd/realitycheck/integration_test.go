@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/dshills/realitycheck/internal/llm"
@@ -238,5 +239,32 @@ func TestIntegration_IncompleteCoverage_FilledAndProvisional(t *testing.T) {
 	}
 	if report.Meta.CoverageComplete || report.Meta.UnevaluatedCount != 4 {
 		t.Errorf("meta: got complete=%v unevaluated=%d, want false / 4", report.Meta.CoverageComplete, report.Meta.UnevaluatedCount)
+	}
+}
+
+// truncatingProvider reports every response as cut off at the token limit.
+type truncatingProvider struct{}
+
+func (truncatingProvider) Complete(context.Context, string, string, int, float64) (string, error) {
+	return "", fmt.Errorf("unused")
+}
+
+func (truncatingProvider) Generate(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{Text: `{"drift":[{"id":"DRIFT-001"`, Truncated: true}, nil
+}
+
+func TestIntegration_TruncatedResponse_ExitsFourWithHint(t *testing.T) {
+	orig := llm.NewProvider
+	llm.NewProvider = func(string, string) (llm.Provider, error) { return truncatingProvider{}, nil }
+	t.Cleanup(func() { llm.NewProvider = orig })
+	f := baseFlags(t, "aligned")
+	f.maxTokens = 2048
+
+	err := runCheck(context.Background(), f)
+	if code := exitCode(err); code != exitCodeAPIError {
+		t.Fatalf("expected exit %d, got %d: %v", exitCodeAPIError, code, err)
+	}
+	if !strings.Contains(err.Error(), "raise --max-tokens (currently 2048)") {
+		t.Errorf("error should tell the agent what to do: %v", err)
 	}
 }

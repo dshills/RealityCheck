@@ -26,9 +26,48 @@ import (
 // responses fail validation. The caller should exit with code 5.
 var ErrInvalidModelOutput = errors.New("llm: invalid model output after repair attempt")
 
+// ErrResponseTruncated is returned when a model response hit the output
+// token limit before it carried anything usable (drift and violations were
+// not complete), so a repair attempt would only be cut off again. The caller
+// should exit with code 4 and suggest raising --max-tokens.
+var ErrResponseTruncated = errors.New("llm: response truncated at the output token limit")
+
 // Provider is the interface for LLM backends.
 type Provider interface {
 	Complete(ctx context.Context, systemPrompt, userPrompt string, maxTokens int, temperature float64) (string, error)
+}
+
+// Request is a single model call.
+type Request struct {
+	System      string
+	User        string
+	MaxTokens   int
+	Temperature float64
+	// Schema, if non-nil, asks the provider to constrain the output to it.
+	Schema *OutputSchema
+}
+
+// Response is a model reply.
+type Response struct {
+	Text string
+	// Truncated is true when the provider stopped at the output token limit.
+	Truncated bool
+}
+
+// Generator is implemented by providers that support native structured
+// output and report truncation. Analyze uses it when available and falls
+// back to Provider.Complete otherwise (e.g. for simple test doubles).
+type Generator interface {
+	Generate(ctx context.Context, req Request) (Response, error)
+}
+
+// generate calls p with req, using Generator when p implements it.
+func generate(ctx context.Context, p Provider, req Request) (Response, error) {
+	if g, ok := p.(Generator); ok {
+		return g.Generate(ctx, req)
+	}
+	text, err := p.Complete(ctx, req.System, req.User, req.MaxTokens, req.Temperature)
+	return Response{Text: text}, err
 }
 
 // NewProvider is the factory for creating LLM providers. It is a package-level
@@ -44,9 +83,26 @@ type Options struct {
 	Temperature float64
 	Model       string
 	Debug       bool
+	// StructuredOutput passes the report JSON schema to providers that
+	// support native structured output. Without it the schema is conveyed
+	// by the prompt only.
+	StructuredOutput bool
 	// Warnf, if set, receives non-fatal diagnostics such as a failed
 	// coverage completion call. It may be nil.
 	Warnf func(format string, args ...any)
+}
+
+// request builds a Request for this run.
+func (o Options) request(system, user string, schema *OutputSchema) Request {
+	r := Request{System: system, User: user, MaxTokens: o.MaxTokens, Temperature: o.Temperature}
+	if o.StructuredOutput {
+		r.Schema = schema
+	}
+	return r
+}
+
+func truncatedErr(maxTokens int) error {
+	return fmt.Errorf("%w (%d) before drift and violations were complete", ErrResponseTruncated, maxTokens)
 }
 
 func (o Options) warnf(format string, args ...any) {
@@ -101,33 +157,41 @@ func Analyze(
 		fmt.Fprintf(os.Stderr, "=== DEBUG: user prompt ===\n%s\n", userPrompt)
 	}
 
-	raw, err := provider.Complete(ctx, sysPrompt, userPrompt, opts.MaxTokens, opts.Temperature)
+	resp, err := generate(ctx, provider, opts.request(sysPrompt, userPrompt, reportSchema))
 	if err != nil {
 		return nil, fmt.Errorf("llm: complete: %w", err)
 	}
 
-	report, validationErrs := ValidateResponse(raw, index)
+	report, validationErrs := ValidateResponse(resp.Text, index)
 	if report == nil || needsRepair(validationErrs) {
+		if resp.Truncated {
+			// Re-sending the prompt plus the cut-off response would be cut
+			// off again; fail fast with an actionable error instead.
+			return nil, truncatedErr(opts.MaxTokens)
+		}
 		// One repair attempt: include the original prompt and the invalid
 		// response so the LLM has full context. This consumes the follow-up
 		// call, so no completion call is made afterwards.
-		repairPrompt := buildRepairPrompt(userPrompt, raw, validationErrs)
-		raw2, err := provider.Complete(ctx, sysPrompt, repairPrompt, opts.MaxTokens, opts.Temperature)
+		repairPrompt := buildRepairPrompt(userPrompt, resp.Text, validationErrs)
+		resp2, err := generate(ctx, provider, opts.request(sysPrompt, repairPrompt, reportSchema))
 		if err != nil {
 			return nil, fmt.Errorf("llm: repair complete: %w", err)
 		}
-		report2, validationErrs2 := ValidateResponse(raw2, index)
+		report2, validationErrs2 := ValidateResponse(resp2.Text, index)
 		if report2 == nil || needsRepair(validationErrs2) {
+			if resp2.Truncated {
+				return nil, truncatedErr(opts.MaxTokens)
+			}
 			return nil, ErrInvalidModelOutput
 		}
-		report2.Meta.ResponseTruncated = hasTruncation(validationErrs2)
+		report2.Meta.ResponseTruncated = resp2.Truncated || hasTruncation(validationErrs2)
 		finalizeReport(report2, specItems, planItems, opts)
 		return report2, nil
 	}
 
 	// Non-fatal validation errors (e.g., evidence path mismatches) were
 	// applied in-place by ValidateResponse.
-	report.Meta.ResponseTruncated = hasTruncation(validationErrs)
+	report.Meta.ResponseTruncated = resp.Truncated || hasTruncation(validationErrs)
 	logDropped(coverage.Normalize(&report.Coverage, specItems, planItems), opts)
 
 	missSpec, missPlan := coverage.Missing(report.Coverage, specItems, planItems)
@@ -161,12 +225,15 @@ func completeCoverage(
 		fmt.Fprintf(os.Stderr, "=== DEBUG: completion user prompt ===\n%s\n", userPrompt)
 	}
 
-	raw, err := provider.Complete(ctx, sysPrompt, userPrompt, opts.MaxTokens, opts.Temperature)
+	resp, err := generate(ctx, provider, opts.request(sysPrompt, userPrompt, completionOutputSchema))
 	if err != nil {
 		opts.warnf("coverage completion call failed: %v", err)
 		return
 	}
-	extra, errs := validateCompletion(raw, index)
+	if resp.Truncated {
+		report.Meta.ResponseTruncated = true
+	}
+	extra, errs := validateCompletion(resp.Text, index)
 	if extra == nil {
 		opts.warnf("coverage completion response was unusable: %v", errs)
 		return
@@ -775,32 +842,74 @@ func (p *anthropicProvider) Complete(
 	maxTokens int,
 	temperature float64,
 ) (string, error) {
-	msg, err := p.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:       anthropic.Model(p.model),
-		MaxTokens:   int64(maxTokens),
-		Temperature: anthropic.Float(temperature),
+	resp, err := p.Generate(ctx, Request{System: systemPrompt, User: userPrompt, MaxTokens: maxTokens, Temperature: temperature})
+	return resp.Text, err
+}
+
+// anthropicParams builds the request parameters. A schema is sent as
+// output_config.format so the model is constrained to it.
+func anthropicParams(model string, req Request) (anthropic.MessageNewParams, error) {
+	params := anthropic.MessageNewParams{
+		Model:       anthropic.Model(model),
+		MaxTokens:   int64(req.MaxTokens),
+		Temperature: anthropic.Float(req.Temperature),
 		System: []anthropic.TextBlockParam{
-			{Text: systemPrompt},
+			{Text: req.System},
 		},
 		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
+			anthropic.NewUserMessage(anthropic.NewTextBlock(req.User)),
 		},
-	})
+	}
+	if req.Schema != nil {
+		schema, err := req.Schema.anthropicMap()
+		if err != nil {
+			return params, fmt.Errorf("anthropic: output schema: %w", err)
+		}
+		params.OutputConfig = anthropic.OutputConfigParam{
+			Format: anthropic.JSONOutputFormatParam{Schema: schema},
+		}
+	}
+	return params, nil
+}
+
+// Generate streams the response. The SDK refuses non-streaming requests
+// whose max_tokens implies more than ten minutes of generation (about 21K
+// tokens), and the truncation hint tells users to raise --max-tokens, so
+// streaming keeps that advice actionable.
+func (p *anthropicProvider) Generate(ctx context.Context, req Request) (Response, error) {
+	params, err := anthropicParams(p.model, req)
 	if err != nil {
-		return "", fmt.Errorf("anthropic: messages.new: %w", err)
+		return Response{}, err
+	}
+	stream := p.client.Messages.NewStreaming(ctx, params)
+	defer func() { _ = stream.Close() }()
+	var msg anthropic.Message
+	for stream.Next() {
+		if err := msg.Accumulate(stream.Current()); err != nil {
+			return Response{}, fmt.Errorf("anthropic: accumulate stream: %w", err)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return Response{}, fmt.Errorf("anthropic: messages stream: %w", err)
 	}
 
+	return anthropicResponse(&msg)
+}
+
+// anthropicResponse extracts text and truncation. A message cut off at the
+// token limit before any text is returned as truncated rather than as an
+// error, so Analyze can say to raise --max-tokens.
+func anthropicResponse(msg *anthropic.Message) (Response, error) {
 	var parts []string
 	for _, block := range msg.Content {
-		// block.Type is a string field from the Anthropic API; "text" is the
-		// only content type that carries assistant text output. The SDK does
-		// not expose a typed constant for content block types in this version.
+		// "text" is the only content type that carries assistant text output.
 		if block.Type == "text" {
 			parts = append(parts, block.Text)
 		}
 	}
-	if len(parts) == 0 {
-		return "", fmt.Errorf("anthropic: response contained no text content blocks")
+	truncated := msg.StopReason == anthropic.StopReasonMaxTokens
+	if len(parts) == 0 && !truncated {
+		return Response{}, fmt.Errorf("anthropic: response contained no text content blocks")
 	}
-	return strings.Join(parts, ""), nil
+	return Response{Text: strings.Join(parts, ""), Truncated: truncated}, nil
 }
