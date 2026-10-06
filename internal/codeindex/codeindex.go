@@ -75,6 +75,19 @@ var testExtractors = map[string]ExtractorFunc{
 	".py":  extractPythonTestFunctions,
 }
 
+// HasSymbolExtractor reports whether the index extracts symbols (or, for
+// test files, test function names) from files like path. For other files
+// the index lists no symbols, so a cited symbol there cannot be checked.
+func HasSymbolExtractor(path string) bool {
+	ext := filepath.Ext(path)
+	if isTestFile(path) {
+		_, ok := testExtractors[ext]
+		return ok
+	}
+	_, ok := symbolExtractors[ext]
+	return ok
+}
+
 // isTestFile returns true for files that follow test-file naming conventions.
 func isTestFile(name string) bool {
 	base := filepath.Base(name)
@@ -360,8 +373,11 @@ func truncatedSummary(idx Index, fullLen int) string {
 var (
 	goFuncRe   = regexp.MustCompile(`(?m)^func\s+(\w+)\s*\(`)
 	goMethodRe = regexp.MustCompile(`(?m)^func\s+\([^)]+\)\s+(\w+)\s*\(`)
-	goTypeRe   = regexp.MustCompile(`(?m)^type\s+(\w+)\s+(?:struct|interface)`)
-	goTestRe   = regexp.MustCompile(`(?m)^func\s+(Test\w+)\s*\(`)
+	// goTypeRe captures every top-level type declaration: structs and
+	// interfaces, named types such as "type Verdict string", aliases, and
+	// generic types ("type Set[T comparable] map[T]struct{}").
+	goTypeRe = regexp.MustCompile(`(?m)^type\s+(\w+)[\s\[]`)
+	goTestRe = regexp.MustCompile(`(?m)^func\s+(Test\w+)\s*\(`)
 )
 
 func extractGoSymbols(content string) []string {

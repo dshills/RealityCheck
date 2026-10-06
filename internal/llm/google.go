@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"google.golang.org/genai"
 )
@@ -19,9 +18,9 @@ type googleProvider struct {
 }
 
 func newGoogleProvider(model string) (Provider, error) {
-	apiKey := os.Getenv("GOOGLE_API_KEY")
+	apiKey := APIKey("google")
 	if apiKey == "" {
-		return nil, fmt.Errorf("llm: GOOGLE_API_KEY environment variable not set")
+		return nil, fmt.Errorf("llm: GOOGLE_API_KEY or GEMINI_API_KEY environment variable not set")
 	}
 	// NewClient only stores configuration; the context is not retained for
 	// requests, which use the context passed to GenerateContent.
@@ -30,7 +29,7 @@ func newGoogleProvider(model string) (Provider, error) {
 	// GOOGLE_API_KEY and GEMINI_API_KEY are set, even though the key is
 	// passed explicitly. It is left alone: silencing it would mean swapping
 	// the process-wide logger, which can clobber an embedding application's
-	// logging. Unset GEMINI_API_KEY to avoid the line.
+	// logging. Set only one of the two to avoid the line.
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
 		APIKey:  apiKey,
 		Backend: genai.BackendGeminiAPI,

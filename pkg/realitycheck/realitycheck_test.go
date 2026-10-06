@@ -217,3 +217,32 @@ func TestVerdictMeetsThreshold(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderAliases(t *testing.T) {
+	if !IsSupportedProvider("gemini") || !IsSupportedProvider(" Claude ") || IsSupportedProvider("vertex") {
+		t.Error("IsSupportedProvider should accept aliases and reject unknown names")
+	}
+	if APIKeyEnvVar("gemini") != "GOOGLE_API_KEY" || DefaultModelForProvider("claude") != DefaultModelForProvider("anthropic") {
+		t.Error("lookups should resolve aliases")
+	}
+}
+
+func TestCheck_GeminiAliasWithGeminiKey(t *testing.T) {
+	t.Setenv("GOOGLE_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "k")
+	g := &recordingGenerator{response: llm.Response{Text: completeResponse}}
+	var gotProvider string
+	orig := llm.NewProvider
+	llm.NewProvider = func(p, _ string) (llm.Provider, error) { gotProvider = p; return g, nil }
+	t.Cleanup(func() { llm.NewProvider = orig })
+	opts := baseOptions(t)
+	opts.Offline = false // exercise the API key pre-flight
+	opts.Provider = "Gemini"
+
+	if _, err := Check(context.Background(), opts); err != nil {
+		t.Fatalf("gemini alias with GEMINI_API_KEY should pass pre-flight: %v", err)
+	}
+	if gotProvider != "google" {
+		t.Errorf("provider = %q, want google", gotProvider)
+	}
+}

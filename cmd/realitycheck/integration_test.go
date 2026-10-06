@@ -268,3 +268,39 @@ func TestIntegration_TruncatedResponse_ExitsFourWithHint(t *testing.T) {
 		t.Errorf("error should tell the agent what to do: %v", err)
 	}
 }
+
+func TestIntegration_ProviderAliases(t *testing.T) {
+	for alias, want := range map[string]string{"gemini": "google", "Claude": "anthropic"} {
+		t.Run(alias, func(t *testing.T) {
+			var gotProvider, gotModel string
+			orig := llm.NewProvider
+			llm.NewProvider = func(provider, model string) (llm.Provider, error) {
+				gotProvider, gotModel = provider, model
+				return &mockMultiProvider{responses: []string{alignedMockResponse}}, nil
+			}
+			t.Cleanup(func() { llm.NewProvider = orig })
+			f := baseFlags(t, "aligned")
+			f.provider = alias
+			f.model = ""
+
+			if err := runCheck(context.Background(), f); err != nil {
+				t.Fatalf("alias %q rejected: %v", alias, err)
+			}
+			if gotProvider != want || gotModel != llm.DefaultModel(want) {
+				t.Errorf("provider/model = %q/%q, want %q/%q", gotProvider, gotModel, want, llm.DefaultModel(want))
+			}
+		})
+	}
+}
+
+func TestIntegration_UnknownProviderListsAliases(t *testing.T) {
+	f := baseFlags(t, "aligned")
+	f.provider = "vertex"
+	err := runCheck(context.Background(), f)
+	if code := exitCode(err); code != exitCodeBadInput {
+		t.Fatalf("exit = %d, want %d", code, exitCodeBadInput)
+	}
+	if !strings.Contains(err.Error(), "google|gemini") {
+		t.Errorf("error should list aliases: %v", err)
+	}
+}

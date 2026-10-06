@@ -46,7 +46,7 @@ cd realitycheck
 go build ./cmd/realitycheck
 ```
 
-Requires `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY` to be set, depending on the provider used.
+Requires `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) to be set, depending on the provider used.
 
 ---
 
@@ -70,7 +70,7 @@ realitycheck check [path] [flags]
 --format json|md           Output format (default: json)
 --out <file>               Write output to file instead of stdout
 --profile <name>           Enforcement profile: general, strict-api, data-pipeline, library
---provider <name>          LLM provider: anthropic, openai, google (default: anthropic)
+--provider <name>          LLM provider: anthropic (alias claude), openai, google (alias gemini) (default: anthropic)
 --strict                   No inferred intent; escalate drift severities
 --fail-on <verdict>        Exit 2 if verdict >= level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION)
 --severity-threshold <s>   Filter output to findings at or above INFO|WARN|CRITICAL
@@ -134,6 +134,11 @@ item it contradicts. The tool fills in the rest:
 
 A violation whose `spec_id` is missing or does not name a SPEC item is kept,
 but its `spec_id` is cleared and its evidence is downgraded to `LOW`.
+
+Every evidence citation is checked against the code index. A path that is not
+indexed, or a symbol the index does not list for that file, downgrades the
+citation's confidence to `LOW`. Symbols are checked for Go, JavaScript,
+TypeScript, Python, and Rust files; elsewhere only the path is checked.
 
 ### Structured output
 

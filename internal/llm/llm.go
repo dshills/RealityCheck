@@ -414,9 +414,9 @@ func ValidateResponse(raw string, index codeindex.Index) (*schema.PartialReport,
 	// 4. ID format check.
 	errs = append(errs, validateIDs(&report)...)
 
-	// 5. Evidence path check — downgrade confidence on fabricated paths.
-	filePaths := indexFilePaths(index)
-	validateEvidencePaths(&report, filePaths, &errs)
+	// 5. Evidence check — downgrade confidence on fabricated paths and
+	// symbols.
+	validateEvidence(&report, newEvidenceIndex(index), &errs)
 
 	return &report, errs
 }
@@ -462,8 +462,8 @@ func hasTruncation(errs []ValidationError) bool {
 // validateCompletion parses a coverage completion response. It returns nil
 // coverage only when the response cannot be parsed. Missing spec or plan
 // arrays are allowed (the model may have had only one kind of item to
-// assess). Fabricated evidence paths are downgraded to LOW confidence as in
-// ValidateResponse; unknown IDs and invalid statuses are left for
+// assess). Fabricated evidence paths and symbols are downgraded to LOW
+// confidence as in ValidateResponse; unknown IDs and invalid statuses are left for
 // coverage.Normalize to drop.
 func validateCompletion(raw string, index codeindex.Index) (*schema.Coverage, []ValidationError) {
 	var resp struct {
@@ -481,23 +481,63 @@ func validateCompletion(raw string, index codeindex.Index) (*schema.Coverage, []
 		})
 	}
 	wrapper := schema.PartialReport{Coverage: resp.Coverage}
-	validateEvidencePaths(&wrapper, indexFilePaths(index), &errs)
+	validateEvidence(&wrapper, newEvidenceIndex(index), &errs)
 	return &wrapper.Coverage, errs
 }
 
-// indexFilePaths builds a set of all file paths in the index.
-func indexFilePaths(index codeindex.Index) map[string]bool {
-	paths := make(map[string]bool, len(index.Files))
+// evidenceIndex is what evidence citations are checked against.
+type evidenceIndex struct {
+	paths   map[string]bool            // every indexed file, manifest, and config
+	symbols map[string]map[string]bool // path -> symbols and test names
+}
+
+// newEvidenceIndex builds the lookup sets from the code index.
+func newEvidenceIndex(index codeindex.Index) evidenceIndex {
+	ei := evidenceIndex{
+		paths:   make(map[string]bool, len(index.Files)),
+		symbols: make(map[string]map[string]bool),
+	}
 	for _, f := range index.Files {
-		paths[f.Path] = true
+		ei.paths[f.Path] = true
 	}
 	for _, m := range index.DependencyManifests {
-		paths[m.Path] = true
+		ei.paths[m.Path] = true
 	}
 	for _, c := range index.ConfigFiles {
-		paths[c] = true
+		ei.paths[c] = true
 	}
-	return paths
+	add := func(path, name string) {
+		if ei.symbols[path] == nil {
+			ei.symbols[path] = make(map[string]bool)
+		}
+		ei.symbols[path][name] = true
+	}
+	for _, sym := range index.Symbols {
+		add(sym.Path, sym.Symbol)
+	}
+	for _, t := range index.Tests {
+		add(t.Path, t.Function)
+	}
+	return ei
+}
+
+// hasSymbol reports whether symbol is indexed for path. Models qualify
+// names in several ways ("Store.Get", "(*Store).Get", "llm.Analyze",
+// "Analyze()"), so the raw name and its last dot-separated segment are both
+// tried, with call parentheses, pointer stars, and receiver parentheses
+// removed.
+func (ei evidenceIndex) hasSymbol(path, symbol string) bool {
+	known := ei.symbols[path]
+	raw := strings.TrimSuffix(strings.TrimSpace(symbol), "()")
+	if known[raw] {
+		return true
+	}
+	last := raw
+	if i := strings.LastIndex(raw, "."); i >= 0 {
+		last = raw[i+1:]
+	}
+	last = strings.Trim(last, "*()")
+	return known[last]
 }
 
 var (
@@ -605,44 +645,53 @@ func validateIDs(r *schema.PartialReport) []ValidationError {
 	return errs
 }
 
-// validateEvidencePaths checks each evidence path against the index. Paths not
-// found in the index have their confidence downgraded to LOW. Errors are appended
-// to errs; the report is modified in place.
-func validateEvidencePaths(r *schema.PartialReport, filePaths map[string]bool, errs *[]ValidationError) {
-	downgrade := func(ev *schema.Evidence, field string) {
+// validateEvidence checks each evidence citation against the index and
+// downgrades confidence to LOW when it does not hold up: the path is not
+// indexed, or the path is indexed but the cited symbol is not among its
+// symbols. Symbols are only checked for files the index extracts symbols
+// from; elsewhere (Markdown, YAML, unsupported languages) there is nothing
+// to check against. Errors are appended to errs; the report is modified in
+// place.
+func validateEvidence(r *schema.PartialReport, ei evidenceIndex, errs *[]ValidationError) {
+	check := func(ev *schema.Evidence, field string) {
 		if ev.Path == "" {
 			return // empty path: omitted evidence; skip validation
 		}
-		if !filePaths[ev.Path] {
+		if !ei.paths[ev.Path] {
 			*errs = append(*errs, ValidationError{
-				Field:   field,
+				Field:   field + ".path",
 				Message: fmt.Sprintf("path %q not found in code index; confidence downgraded to LOW", ev.Path),
 			})
 			ev.Confidence = schema.ConfidenceLow
+			return
 		}
+		if ev.Symbol == "" || !codeindex.HasSymbolExtractor(ev.Path) || ei.hasSymbol(ev.Path, ev.Symbol) {
+			return
+		}
+		*errs = append(*errs, ValidationError{
+			Field:   field + ".symbol",
+			Message: fmt.Sprintf("symbol %q not found in %q in code index; confidence downgraded to LOW", ev.Symbol, ev.Path),
+		})
+		ev.Confidence = schema.ConfidenceLow
 	}
 	for i := range r.Coverage.Spec {
 		for j := range r.Coverage.Spec[i].Evidence {
-			downgrade(&r.Coverage.Spec[i].Evidence[j],
-				fmt.Sprintf("coverage.spec[%d].evidence[%d].path", i, j))
+			check(&r.Coverage.Spec[i].Evidence[j], fmt.Sprintf("coverage.spec[%d].evidence[%d]", i, j))
 		}
 	}
 	for i := range r.Coverage.Plan {
 		for j := range r.Coverage.Plan[i].Evidence {
-			downgrade(&r.Coverage.Plan[i].Evidence[j],
-				fmt.Sprintf("coverage.plan[%d].evidence[%d].path", i, j))
+			check(&r.Coverage.Plan[i].Evidence[j], fmt.Sprintf("coverage.plan[%d].evidence[%d]", i, j))
 		}
 	}
 	for i := range r.Drift {
 		for j := range r.Drift[i].Evidence {
-			downgrade(&r.Drift[i].Evidence[j],
-				fmt.Sprintf("drift[%d].evidence[%d].path", i, j))
+			check(&r.Drift[i].Evidence[j], fmt.Sprintf("drift[%d].evidence[%d]", i, j))
 		}
 	}
 	for i := range r.Violations {
 		for j := range r.Violations[i].Evidence {
-			downgrade(&r.Violations[i].Evidence[j],
-				fmt.Sprintf("violations[%d].evidence[%d].path", i, j))
+			check(&r.Violations[i].Evidence[j], fmt.Sprintf("violations[%d].evidence[%d]", i, j))
 		}
 	}
 }
@@ -811,15 +860,20 @@ func buildRepairPrompt(originalUserPrompt, previousResponse string, errs []Valid
 
 // defaultNewProvider dispatches to the appropriate provider implementation.
 func defaultNewProvider(providerName, model string) (Provider, error) {
-	switch strings.ToLower(providerName) {
-	case "anthropic", "":
-		return newAnthropicProvider(model)
+	if strings.TrimSpace(providerName) == "" {
+		providerName = "anthropic"
+	}
+	canonical, ok := CanonicalProvider(providerName)
+	if !ok {
+		return nil, fmt.Errorf("llm: unknown provider %q", providerName)
+	}
+	switch canonical {
 	case "openai":
 		return newOpenAIProvider(model)
 	case "google":
 		return newGoogleProvider(model)
 	default:
-		return nil, fmt.Errorf("llm: unknown provider %q", providerName)
+		return newAnthropicProvider(model)
 	}
 }
 

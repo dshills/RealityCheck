@@ -111,7 +111,7 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.format, "format", "json", "output format: json or md (env: REALITYCHECK_FORMAT)")
 	cmd.Flags().StringVar(&f.out, "out", "", "write output to this file instead of stdout")
 	cmd.Flags().StringVar(&f.profileName, "profile", "general", "enforcement profile name (env: REALITYCHECK_PROFILE)")
-	cmd.Flags().StringVar(&f.provider, "provider", "anthropic", "LLM provider: anthropic, openai, google (env: REALITYCHECK_LLM_PROVIDER)")
+	cmd.Flags().StringVar(&f.provider, "provider", "anthropic", "LLM provider: anthropic (alias claude), openai, google (alias gemini) (env: REALITYCHECK_LLM_PROVIDER)")
 	cmd.Flags().BoolVar(&f.strict, "strict", false, "strict mode: escalate drift severities and treat unclear coverage as NOT_IMPLEMENTED (env: REALITYCHECK_STRICT)")
 	cmd.Flags().StringVar(&f.failOn, "fail-on", "", "exit 2 if verdict >= this level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION) (env: REALITYCHECK_FAIL_ON)")
 	cmd.Flags().StringVar(&f.severityThreshold, "severity-threshold", "", "filter findings below this severity from output (INFO|WARN|CRITICAL); does not affect scoring (env: REALITYCHECK_SEVERITY_THRESHOLD)")
@@ -214,16 +214,15 @@ func runCheck(ctx context.Context, f checkFlags) error {
 	// Normalize flag values to uppercase for case-insensitive matching.
 	f.failOn = strings.ToUpper(f.failOn)
 	f.severityThreshold = strings.ToUpper(f.severityThreshold)
-	// Validate provider.
-	switch strings.ToLower(f.provider) {
-	case "anthropic", "openai", "google":
-		// valid
-	default:
-		return &exitError{exitCodeBadInput, fmt.Sprintf("error: --provider value %q is not valid (anthropic|openai|google)", f.provider)}
+	// Validate provider and resolve aliases (claude, gemini).
+	provider, ok := llm.CanonicalProvider(f.provider)
+	if !ok {
+		return &exitError{exitCodeBadInput, fmt.Sprintf("error: --provider value %q is not valid (%s)", f.provider, llm.ProviderNames)}
 	}
+	f.provider = provider
 	// Apply default model for the selected provider if none was specified.
 	if f.model == "" {
-		f.model = defaultModelForProvider(f.provider)
+		f.model = llm.DefaultModel(f.provider)
 	}
 	if f.failOn != "" {
 		if verdict.VerdictOrdinal(schema.Verdict(f.failOn)) < 0 {
@@ -241,9 +240,9 @@ func runCheck(ctx context.Context, f checkFlags) error {
 	// Pre-flight API key check. When --offline is set the check is skipped
 	// (offline mode indicates a no-network or mock-provider environment).
 	// Per PLAN §7b: exit 4 if key is absent and --offline is false.
-	if !f.offline && os.Getenv(providerAPIKeyEnvVar(f.provider)) == "" {
-		envVar := providerAPIKeyEnvVar(f.provider)
-		return &exitError{exitCodeAPIError, fmt.Sprintf("error: %s is not set; set the environment variable or pass --offline to skip this check", envVar)}
+	if !f.offline && llm.APIKey(f.provider) == "" {
+		envVars := strings.Join(llm.APIKeyEnvVars(f.provider), " or ")
+		return &exitError{exitCodeAPIError, fmt.Sprintf("error: %s is not set; set the environment variable or pass --offline to skip this check", envVars)}
 	}
 
 	logVerbose := func(msg string) {
@@ -487,28 +486,4 @@ func filterViolations(violations []schema.Violation, threshold schema.Severity) 
 		}
 	}
 	return out
-}
-
-// providerAPIKeyEnvVar returns the environment variable name for the given provider's API key.
-func providerAPIKeyEnvVar(provider string) string {
-	switch strings.ToLower(provider) {
-	case "openai":
-		return "OPENAI_API_KEY"
-	case "google":
-		return "GOOGLE_API_KEY"
-	default:
-		return "ANTHROPIC_API_KEY"
-	}
-}
-
-// defaultModelForProvider returns the default model ID for the given provider.
-func defaultModelForProvider(provider string) string {
-	switch strings.ToLower(provider) {
-	case "openai":
-		return "gpt-4o"
-	case "google":
-		return "gemini-2.5-flash"
-	default:
-		return "claude-opus-4-6"
-	}
 }

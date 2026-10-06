@@ -119,8 +119,8 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 	if opts.Model == "" {
 		opts.Model = DefaultModelForProvider(opts.Provider)
 	}
-	if !opts.Offline && os.Getenv(APIKeyEnvVar(opts.Provider)) == "" {
-		return nil, appError(ErrorProvider, fmt.Errorf("%s is not set", APIKeyEnvVar(opts.Provider)))
+	if !opts.Offline && llm.APIKey(opts.Provider) == "" {
+		return nil, appError(ErrorProvider, fmt.Errorf("%s is not set", strings.Join(llm.APIKeyEnvVars(opts.Provider), " or ")))
 	}
 	codeRoot := opts.CodeRoot
 	if codeRoot == "" {
@@ -289,41 +289,32 @@ func IsValidVerdict(value string) bool {
 	return verdict.VerdictOrdinal(Verdict(strings.ToUpper(value))) >= 0
 }
 
-// normalizeProvider trims and lowercases a provider name so validation and
-// every lookup agree on it.
+// normalizeProvider resolves a provider name or alias ("claude", "gemini")
+// to its canonical name so validation and every lookup agree on it. Unknown
+// names are returned trimmed and lowercased so validation can reject them.
 func normalizeProvider(provider string) string {
+	if canonical, ok := llm.CanonicalProvider(provider); ok {
+		return canonical
+	}
 	return strings.ToLower(strings.TrimSpace(provider))
 }
 
+// IsSupportedProvider reports whether provider is a known provider name or
+// alias.
 func IsSupportedProvider(provider string) bool {
-	switch normalizeProvider(provider) {
-	case "anthropic", "openai", "google":
-		return true
-	default:
-		return false
-	}
+	_, ok := llm.CanonicalProvider(provider)
+	return ok
 }
 
+// APIKeyEnvVar returns the primary API key environment variable for a
+// provider. Google also accepts GEMINI_API_KEY as a fallback.
 func APIKeyEnvVar(provider string) string {
-	switch normalizeProvider(provider) {
-	case "openai":
-		return "OPENAI_API_KEY"
-	case "google":
-		return "GOOGLE_API_KEY"
-	default:
-		return "ANTHROPIC_API_KEY"
-	}
+	return llm.APIKeyEnvVars(normalizeProvider(provider))[0]
 }
 
+// DefaultModelForProvider returns the default model ID for a provider.
 func DefaultModelForProvider(provider string) string {
-	switch normalizeProvider(provider) {
-	case "openai":
-		return "gpt-4o"
-	case "google":
-		return "gemini-2.5-flash"
-	default:
-		return "claude-opus-4-6"
-	}
+	return llm.DefaultModel(normalizeProvider(provider))
 }
 
 func KnownProviders() []ProviderModel {

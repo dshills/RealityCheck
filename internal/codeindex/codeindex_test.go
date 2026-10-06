@@ -138,3 +138,27 @@ func TestSummary_Truncation(t *testing.T) {
 		t.Errorf("truncated summary is too long: %d bytes (limit %d)", len(summary), maxSummaryBytes)
 	}
 }
+
+func TestExtractGoSymbols_AllTypeDeclarations(t *testing.T) {
+	src := "package x\n\ntype Verdict string\ntype Alias = int\ntype Set[T comparable] map[T]struct{}\ntype S struct{}\ntype I interface{}\ntype (\n\tgrouped int\n)\n"
+	got := map[string]bool{}
+	for _, s := range extractGoSymbols(src) {
+		got[s] = true
+	}
+	for _, want := range []string{"Verdict", "Alias", "Set", "S", "I"} {
+		if !got[want] {
+			t.Errorf("missing type %q in %v", want, got)
+		}
+	}
+}
+
+func TestHasSymbolExtractor(t *testing.T) {
+	for path, want := range map[string]bool{
+		"a.go": true, "a_test.go": true, "a.py": true, "test_a.py": true,
+		"a.rs": true, "a.ts": true, "a.md": false, "a.yaml": false, "a.java": false,
+	} {
+		if got := HasSymbolExtractor(path); got != want {
+			t.Errorf("HasSymbolExtractor(%q) = %v, want %v", path, got, want)
+		}
+	}
+}

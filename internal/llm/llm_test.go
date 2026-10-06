@@ -77,6 +77,9 @@ func testIndex() codeindex.Index {
 		Files: []codeindex.FileEntry{
 			{Path: "internal/store/store.go", Language: "Go"},
 		},
+		Symbols: []codeindex.SymbolEntry{
+			{Path: "internal/store/store.go", Symbol: "Foo"},
+		},
 	}
 }
 
@@ -237,5 +240,54 @@ func TestAnalyze_ValidResponse(t *testing.T) {
 	}
 	if report == nil {
 		t.Fatal("expected non-nil report")
+	}
+}
+
+func TestValidateEvidence_Symbols(t *testing.T) {
+	idx := codeindex.Index{
+		Files: []codeindex.FileEntry{
+			{Path: "store.go", Language: "Go"},
+			{Path: "store_test.go", Language: "Go"},
+			{Path: "README.md", Language: "Markdown"},
+		},
+		Symbols: []codeindex.SymbolEntry{
+			{Path: "store.go", Symbol: "Store"},
+			{Path: "store.go", Symbol: "Get"},
+		},
+		Tests:       []codeindex.TestEntry{{Path: "store_test.go", Function: "TestGet"}},
+		ConfigFiles: []string{"config.yaml"},
+	}
+	tests := []struct {
+		path, symbol string
+		wantLow      bool
+	}{
+		{"store.go", "Get", false},
+		{"store.go", "Store.Get", false},
+		{"store.go", "(*Store).Get", false},
+		{"store.go", "pkg.Store", false},
+		{"store.go", "Get()", false},
+		{"store.go", "", false},
+		{"store_test.go", "TestGet", false},
+		{"README.md", "Anything", false},   // no extractor: cannot check
+		{"config.yaml", "anything", false}, // config: cannot check
+		{"store.go", "Delete", true},       // not indexed for this file
+		{"store.go", "Store.Delete", true},
+		{"store_test.go", "TestDelete", true},
+		{"missing.go", "Get", true}, // unknown path
+	}
+	for _, tc := range tests {
+		r := schema.PartialReport{Coverage: schema.Coverage{Spec: []schema.SpecCoverageEntry{{
+			ID: "SPEC-001", Status: schema.StatusImplemented,
+			Evidence: []schema.Evidence{{Path: tc.path, Symbol: tc.symbol, Confidence: schema.ConfidenceHigh}},
+		}}}}
+		var errs []ValidationError
+		validateEvidence(&r, newEvidenceIndex(idx), &errs)
+		gotLow := r.Coverage.Spec[0].Evidence[0].Confidence == schema.ConfidenceLow
+		if gotLow != tc.wantLow {
+			t.Errorf("(%s, %q): downgraded=%v, want %v (errs %v)", tc.path, tc.symbol, gotLow, tc.wantLow, errs)
+		}
+		if gotLow != (len(errs) == 1) {
+			t.Errorf("(%s, %q): want exactly one error when downgraded, got %v", tc.path, tc.symbol, errs)
+		}
 	}
 }

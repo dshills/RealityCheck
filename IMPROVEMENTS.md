@@ -38,6 +38,8 @@ Two conclusions drive the ordering below:
 ## P0 — Accuracy (the verdict must be trustworthy)
 
 ### 1. Enforce coverage completeness
+**Status: done** (065f229)
+
 **Accuracy · Tokens**
 - After validation, compare returned coverage IDs against the parsed spec/plan
   IDs. Reject IDs that were never sent. Fill every missing ID with `UNCLEAR`
@@ -50,6 +52,8 @@ Two conclusions drive the ordering below:
   `DRIFT_DETECTED`, with no indication that 94% of the spec was never assessed.
 
 ### 2. Stop asking the model for fields the tool already knows
+**Status: done** (5a940ee)
+
 **Tokens · Speed · Accuracy**
 - Remove `spec_reference`, `plan_reference`, `quote`, and `meta` from the LLM
   output schema. The tool owns the ID → line-range mapping; fill these locally
@@ -60,6 +64,8 @@ Two conclusions drive the ordering below:
   surface, and fixes the hallucinated `meta.model` seen in the baseline.
 
 ### 3. Native structured output + truncation detection
+**Status: done** (98c4eda)
+
 **Accuracy · Speed**
 - Anthropic: force a tool call with the report JSON schema (or the structured
   output API). OpenAI: `response_format: json_schema` (strict). Gemini:
@@ -102,6 +108,8 @@ Two conclusions drive the ordering below:
   spec/plan/code pairs that look exactly like drift to the model.
 
 ### 6. Quick correctness fixes
+**Status: done.** The Gemini client change landed with item 3.
+
 - Accept `gemini` as an alias for `google` (the env in this environment sets
   `REALITYCHECK_LLM_PROVIDER=gemini`, so every agent invocation currently exits 3
   until the flag is overridden). Also accept `claude` → anthropic.
