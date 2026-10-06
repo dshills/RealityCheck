@@ -83,6 +83,12 @@ func RenderMarkdown(report *schema.Report) string {
 		for _, v := range report.Violations {
 			fmt.Fprintf(&sb, "<details>\n<summary><strong>%s</strong> [%s] — %s</summary>\n\n",
 				v.ID, v.Severity, mdEscape(v.Description))
+			if v.SpecID != "" {
+				fmt.Fprintf(&sb, "**Contradicts:** %s (lines %d-%d)\n\n",
+					v.SpecID, v.SpecReference.LineStart, v.SpecReference.LineEnd)
+			} else {
+				sb.WriteString("**Contradicts:** no valid spec item cited (evidence downgraded to LOW)\n\n")
+			}
 			writeEvidence(&sb, v.Evidence)
 			if v.Impact != "" {
 				fmt.Fprintf(&sb, "**Impact:** %s\n\n", mdEscape(v.Impact))

@@ -119,6 +119,20 @@ Score starts at 100 and decreases deterministically:
 
 Scoring is always computed locally — never by the LLM.
 
+### What the model produces vs. what the tool fills in
+
+The model is asked only for judgments: coverage status, evidence, notes, and
+drift and violation findings. Each violation cites the `spec_id` of the SPEC
+item it contradicts. The tool fills in the rest:
+
+- every `spec_reference` / `plan_reference` line range, derived from the item
+  ID (quotes are left empty; the ID and lines identify the item);
+- `meta` (`model` and `temperature` come from the CLI flags);
+- the score and verdict.
+
+A violation whose `spec_id` is missing or does not name a SPEC item is kept,
+but its `spec_id` is cleared and its evidence is downgraded to `LOW`.
+
 ### Coverage completeness
 
 Every parsed spec and plan item gets exactly one coverage entry in the report.

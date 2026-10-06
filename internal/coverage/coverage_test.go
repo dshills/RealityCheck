@@ -273,3 +273,23 @@ func TestFillMissing_CompleteIsNoop(t *testing.T) {
 		t.Errorf("filled = %d, want 0", n)
 	}
 }
+
+func TestApplyReferences_OverridesModelValues(t *testing.T) {
+	specItems := reconcileItems("SPEC", 2)
+	planItems := reconcileItems("PLAN", 1)
+	cov := schema.Coverage{
+		Spec: []schema.SpecCoverageEntry{
+			{ID: "SPEC-002", Status: schema.StatusImplemented, SpecReference: schema.Reference{LineStart: 999, LineEnd: 1000, Quote: "fabricated"}},
+		},
+		Plan: []schema.PlanCoverageEntry{
+			{ID: "PLAN-001", Status: schema.StatusImplemented},
+		},
+	}
+	ApplyReferences(&cov, specItems, planItems)
+	if got := cov.Spec[0].SpecReference; got != (schema.Reference{LineStart: 20, LineEnd: 21}) {
+		t.Errorf("spec reference = %+v, want lines 20-21 with no quote", got)
+	}
+	if got := cov.Plan[0].PlanReference; got != (schema.Reference{LineStart: 10, LineEnd: 11}) {
+		t.Errorf("plan reference = %+v, want lines 10-11", got)
+	}
+}

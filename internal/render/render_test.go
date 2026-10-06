@@ -267,3 +267,15 @@ func TestMdEscape(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderMarkdown_ViolationContradicts(t *testing.T) {
+	report := sampleReport()
+	if md := RenderMarkdown(report); !strings.Contains(md, "**Contradicts:** no valid spec item cited") {
+		t.Error("violation without spec_id should say no valid spec item was cited")
+	}
+	report.Violations[0].SpecID = "SPEC-004"
+	report.Violations[0].SpecReference = schema.Reference{LineStart: 12, LineEnd: 14}
+	if md := RenderMarkdown(report); !strings.Contains(md, "**Contradicts:** SPEC-004 (lines 12-14)") {
+		t.Error("markdown missing violated spec item")
+	}
+}

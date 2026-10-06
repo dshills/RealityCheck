@@ -284,3 +284,75 @@ func TestAnalyze_TruncatedBeforeFindings_Repairs(t *testing.T) {
 		t.Errorf("repair prompt should explain the truncation; calls = %d", len(p.prompts))
 	}
 }
+
+func TestOutputSchemas_OmitDerivedFields(t *testing.T) {
+	for name, sch := range map[string]string{"output": outputSchema, "completion": completionSchema} {
+		for _, banned := range []string{"spec_reference", "plan_reference", "quote", `"meta"`, "line_start"} {
+			if strings.Contains(sch, banned) {
+				t.Errorf("%s schema still asks the model for %s", name, banned)
+			}
+		}
+	}
+	if !strings.Contains(outputSchema, `"spec_id"`) {
+		t.Error("output schema should ask violations for spec_id")
+	}
+}
+
+func TestAnalyze_DerivesReferencesAndIgnoresModelMeta(t *testing.T) {
+	resp := `{"drift":[],
+	  "violations":[
+	    {"id":"VIOLATION-001","severity":"CRITICAL","description":"ok","spec_id":" SPEC-002 ","evidence":[{"path":"internal/store/store.go","confidence":"HIGH"}],"blocking":true},
+	    {"id":"VIOLATION-002","severity":"WARN","description":"unknown id","spec_id":"SPEC-999","spec_reference":{"line_start":7,"line_end":8},"evidence":[{"path":"internal/store/store.go","confidence":"HIGH"}]},
+	    {"id":"VIOLATION-003","severity":"WARN","description":"plan id","spec_id":"PLAN-001","evidence":[]},
+	    {"id":"VIOLATION-004","severity":"INFO","description":"none","evidence":[{"path":"internal/store/store.go","confidence":"MEDIUM"}]}
+	  ],
+	  "coverage":{"spec":[
+	    {"id":"SPEC-001","status":"IMPLEMENTED","spec_reference":{"line_start":40,"line_end":41,"quote":"made up"},"evidence":[]},
+	    {"id":"SPEC-002","status":"PARTIAL","evidence":[]}],
+	   "plan":[{"id":"PLAN-001","status":"IMPLEMENTED","evidence":[]}]},
+	  "meta":{"model":"invented","temperature":0.9,"coverage_complete":true,"unevaluated_count":7,"response_truncated":true}}`
+	p := &recordingProvider{responses: []string{resp}}
+	installRecorder(t, p)
+	var warns []string
+
+	r, err := runAnalyze(t, items("SPEC", 2), items("PLAN", 1), false, &warns)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := r.Coverage.Spec[0].SpecReference; got != (schema.Reference{LineStart: 1, LineEnd: 1}) {
+		t.Errorf("SPEC-001 reference = %+v, want derived lines 1-1 without quote", got)
+	}
+	if got := r.Coverage.Plan[0].PlanReference; got != (schema.Reference{LineStart: 1, LineEnd: 1}) {
+		t.Errorf("PLAN-001 reference = %+v", got)
+	}
+
+	v := r.Violations
+	if v[0].SpecID != "SPEC-002" || v[0].SpecReference != (schema.Reference{LineStart: 2, LineEnd: 2}) || v[0].Evidence[0].Confidence != schema.ConfidenceHigh {
+		t.Errorf("valid violation = %+v", v[0])
+	}
+	for _, bad := range v[1:] {
+		if bad.SpecID != "" || bad.SpecReference != (schema.Reference{}) {
+			t.Errorf("%s: unresolved spec_id should be cleared, got %q %+v", bad.ID, bad.SpecID, bad.SpecReference)
+		}
+		for _, ev := range bad.Evidence {
+			if ev.Confidence != schema.ConfidenceLow {
+				t.Errorf("%s: evidence confidence = %s, want LOW", bad.ID, ev.Confidence)
+			}
+		}
+	}
+	if len(v) != 4 {
+		t.Errorf("violations must never be dropped, got %d", len(v))
+	}
+	joined := strings.Join(warns, "\n")
+	for _, want := range []string{`"SPEC-999"`, `"PLAN-001"`, `"VIOLATION-004" cites no spec_id`} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings missing %s: %v", want, warns)
+		}
+	}
+
+	m := r.Meta
+	if m.Model != "test-model" || m.Temperature != 0.2 || !m.CoverageComplete || m.UnevaluatedCount != 0 || m.ResponseTruncated {
+		t.Errorf("meta must come from the tool, got %+v", m)
+	}
+}

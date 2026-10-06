@@ -19,37 +19,35 @@ import (
 const alignedMockResponse = `{
   "coverage": {
     "spec": [
-      {"id":"SPEC-001","status":"IMPLEMENTED","spec_reference":{"line_start":4,"line_end":4},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
-      {"id":"SPEC-002","status":"IMPLEMENTED","spec_reference":{"line_start":5,"line_end":5},"evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}]},
-      {"id":"SPEC-003","status":"IMPLEMENTED","spec_reference":{"line_start":6,"line_end":6},"evidence":[{"path":"store.go","symbol":"Delete","confidence":"HIGH"}]}
+      {"id":"SPEC-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
+      {"id":"SPEC-002","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}]},
+      {"id":"SPEC-003","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Delete","confidence":"HIGH"}]}
     ],
     "plan": [
-      {"id":"PLAN-001","status":"IMPLEMENTED","plan_reference":{"line_start":4,"line_end":4},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
-      {"id":"PLAN-002","status":"IMPLEMENTED","plan_reference":{"line_start":5,"line_end":5},"evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}]},
-      {"id":"PLAN-003","status":"IMPLEMENTED","plan_reference":{"line_start":6,"line_end":6},"evidence":[{"path":"store.go","symbol":"Delete","confidence":"HIGH"}]}
+      {"id":"PLAN-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
+      {"id":"PLAN-002","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}]},
+      {"id":"PLAN-003","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Delete","confidence":"HIGH"}]}
     ]
   },
   "drift": [],
-  "violations": [],
-  "meta": {"model":"mock","temperature":0.2}
+  "violations": []
 }`
 
 // driftMockResponse is the canned response for the drift fixture.
 const driftMockResponse = `{
   "coverage": {
     "spec": [
-      {"id":"SPEC-001","status":"IMPLEMENTED","spec_reference":{"line_start":4,"line_end":4},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
-      {"id":"SPEC-002","status":"IMPLEMENTED","spec_reference":{"line_start":5,"line_end":5},"evidence":[]}
+      {"id":"SPEC-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
+      {"id":"SPEC-002","status":"IMPLEMENTED","evidence":[]}
     ],
     "plan": [
-      {"id":"PLAN-001","status":"IMPLEMENTED","plan_reference":{"line_start":4,"line_end":4},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}
+      {"id":"PLAN-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}
     ]
   },
   "drift": [
     {"id":"DRIFT-001","severity":"CRITICAL","description":"Unauthorized write endpoint","evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}],"why_unjustified":"Spec forbids writes","impact":"Spec violation","recommendation":"Remove Set"}
   ],
-  "violations": [],
-  "meta": {"model":"mock","temperature":0.2}
+  "violations": []
 }`
 
 // mockMultiProvider returns successive responses from a list.
@@ -214,10 +212,10 @@ func TestIntegration_IncompleteCoverage_FilledAndProvisional(t *testing.T) {
 	// fails; that must not fail the run.
 	partial := `{
   "coverage": {
-    "spec": [{"id":"SPEC-001","status":"IMPLEMENTED","spec_reference":{"line_start":5,"line_end":5},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}],
-    "plan": [{"id":"PLAN-001","status":"IMPLEMENTED","plan_reference":{"line_start":5,"line_end":5},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}]
+    "spec": [{"id":"SPEC-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}],
+    "plan": [{"id":"PLAN-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}]
   },
-  "drift": [], "violations": [], "meta": {"model":"mock","temperature":0.2}
+  "drift": [], "violations": []
 }`
 	injectMock(t, []string{partial})
 	f := baseFlags(t, "aligned")

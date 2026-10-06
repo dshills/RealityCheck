@@ -121,7 +121,7 @@ func Analyze(
 			return nil, ErrInvalidModelOutput
 		}
 		report2.Meta.ResponseTruncated = hasTruncation(validationErrs2)
-		finalizeCoverage(report2, specItems, planItems, opts)
+		finalizeReport(report2, specItems, planItems, opts)
 		return report2, nil
 	}
 
@@ -135,7 +135,7 @@ func Analyze(
 		completeCoverage(ctx, provider, prof, report, missSpec, missPlan, specItems, planItems, index, opts)
 	}
 
-	finalizeCoverage(report, specItems, planItems, opts)
+	finalizeReport(report, specItems, planItems, opts)
 	return report, nil
 }
 
@@ -186,17 +186,45 @@ func completeCoverage(
 	}
 }
 
-// finalizeCoverage reconciles report coverage with the parsed items, fills
-// placeholders for anything still missing, and records completeness in Meta.
-// It also sets Meta.Model and Meta.Temperature from opts: the model's own
-// values are unreliable and, with meta emitted last, often truncated away.
-func finalizeCoverage(report *schema.PartialReport, specItems []spec.Item, planItems []plan.Item, opts Options) {
+// finalizeReport fills in everything the tool knows better than the model:
+// it reconciles coverage with the parsed items, fills placeholders for
+// anything still missing, derives every spec/plan reference from item IDs,
+// and sets Meta. The model is not asked for references or meta at all.
+func finalizeReport(report *schema.PartialReport, specItems []spec.Item, planItems []plan.Item, opts Options) {
 	report.Meta.Model = opts.Model
 	report.Meta.Temperature = opts.Temperature
 	logDropped(coverage.Normalize(&report.Coverage, specItems, planItems), opts)
 	filled := coverage.FillMissing(&report.Coverage, specItems, planItems, opts.Strict)
 	report.Meta.CoverageComplete = filled == 0
 	report.Meta.UnevaluatedCount = filled
+	coverage.ApplyReferences(&report.Coverage, specItems, planItems)
+	resolveViolationRefs(report, specItems, opts)
+}
+
+// resolveViolationRefs derives each violation's spec reference from the
+// spec_id the model cited. A violation citing no valid SPEC ID is kept, so a
+// real contradiction is never hidden, but its spec_id is cleared, its
+// reference is left empty, and its evidence is downgraded to LOW confidence.
+func resolveViolationRefs(report *schema.PartialReport, specItems []spec.Item, opts Options) {
+	refs := coverage.ReferenceIndex(specItems)
+	for i := range report.Violations {
+		v := &report.Violations[i]
+		v.SpecID = strings.TrimSpace(v.SpecID)
+		if ref, ok := refs[v.SpecID]; ok {
+			v.SpecReference = ref
+			continue
+		}
+		if v.SpecID == "" {
+			opts.warnf("violation %q cites no spec_id; evidence downgraded to LOW", v.ID)
+		} else {
+			opts.warnf("violation %q cites unknown spec_id %q; evidence downgraded to LOW", v.ID, v.SpecID)
+		}
+		v.SpecID = ""
+		v.SpecReference = schema.Reference{}
+		for j := range v.Evidence {
+			v.Evidence[j].Confidence = schema.ConfidenceLow
+		}
+	}
 }
 
 func logDropped(dropped []coverage.Dropped, opts Options) {
@@ -262,6 +290,8 @@ func ValidateResponse(raw string, index codeindex.Index) (*schema.PartialReport,
 		})
 		return nil, errs
 	}
+	// Meta is owned by the tool; ignore anything the model put there.
+	report.Meta = schema.Meta{}
 	if salvaged != nil {
 		// A truncated response is usable only if the findings were emitted
 		// in full; otherwise the cut may have hidden drift or violations.
@@ -594,34 +624,25 @@ func writePromptRules(sb *strings.Builder, prof profile.Profile, strict bool) {
 	}
 }
 
+// coverageEntrySchema is shared by both output schemas. It has no
+// spec_reference/plan_reference: the tool derives line ranges from the ID.
+const coverageEntrySchema = `{"id": "%s-001", "status": "IMPLEMENTED|PARTIAL|NOT_IMPLEMENTED|UNCLEAR", "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}], "notes": "optional, brief"}`
+
 // completionSchema is the JSON schema fragment for the coverage completion call.
-const completionSchema = `Output schema (JSON only):
+var completionSchema = `Output schema (JSON only):
 {
   "coverage": {
-    "spec": [
-      {
-        "id": "SPEC-001",
-        "status": "IMPLEMENTED|PARTIAL|NOT_IMPLEMENTED|UNCLEAR",
-        "spec_reference": {"line_start": 1, "line_end": 2},
-        "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}],
-        "notes": "optional explanation"
-      }
-    ],
-    "plan": [
-      {
-        "id": "PLAN-001",
-        "status": "IMPLEMENTED|PARTIAL|NOT_IMPLEMENTED|UNCLEAR",
-        "plan_reference": {"line_start": 1, "line_end": 2},
-        "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}],
-        "notes": "optional explanation"
-      }
-    ]
+    "spec": [` + fmt.Sprintf(coverageEntrySchema, "SPEC") + `],
+    "plan": [` + fmt.Sprintf(coverageEntrySchema, "PLAN") + `]
   }
 }
 `
 
-// outputSchema is the JSON schema fragment shown to the LLM.
-const outputSchema = `Output schema (JSON only). Emit the keys in this order: drift, violations, coverage, meta.
+// outputSchema is the JSON schema fragment shown to the LLM. It asks only
+// for what the model must judge. Line references, quotes, and meta are
+// filled in locally, which keeps output tokens down and removes a source of
+// fabrication.
+var outputSchema = `Output schema (JSON only). Emit the keys in this order: drift, violations, coverage.
 {
   "drift": [
     {
@@ -639,35 +660,15 @@ const outputSchema = `Output schema (JSON only). Emit the keys in this order: dr
       "id": "VIOLATION-001",
       "severity": "INFO|WARN|CRITICAL",
       "description": "...",
-      "spec_reference": {"line_start": 1, "line_end": 2, "quote": "..."},
+      "spec_id": "SPEC-001 (the SPEC item the code contradicts)",
       "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}],
       "impact": "...",
       "blocking": true
     }
   ],
   "coverage": {
-    "spec": [
-      {
-        "id": "SPEC-001",
-        "status": "IMPLEMENTED|PARTIAL|NOT_IMPLEMENTED|UNCLEAR",
-        "spec_reference": {"line_start": 1, "line_end": 2, "quote": "..."},
-        "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}],
-        "notes": "optional explanation"
-      }
-    ],
-    "plan": [
-      {
-        "id": "PLAN-001",
-        "status": "IMPLEMENTED|PARTIAL|NOT_IMPLEMENTED|UNCLEAR",
-        "plan_reference": {"line_start": 1, "line_end": 2, "quote": "..."},
-        "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}],
-        "notes": "optional explanation"
-      }
-    ]
-  },
-  "meta": {
-    "model": "<model-name>",
-    "temperature": 0.2
+    "spec": [` + fmt.Sprintf(coverageEntrySchema, "SPEC") + `],
+    "plan": [` + fmt.Sprintf(coverageEntrySchema, "PLAN") + `]
   }
 }
 `

@@ -120,9 +120,13 @@ type DriftFinding struct {
 
 // Violation represents code behavior that contradicts declared spec constraints.
 type Violation struct {
-	ID            string     `json:"id"`
-	Severity      Severity   `json:"severity"`
-	Description   string     `json:"description"`
+	ID          string   `json:"id"`
+	Severity    Severity `json:"severity"`
+	Description string   `json:"description"`
+	// SpecID is the SPEC item the code contradicts, as cited by the model.
+	// SpecReference is derived from it locally. An empty SpecID means the
+	// model cited no valid spec item.
+	SpecID        string     `json:"spec_id,omitempty"`
 	SpecReference Reference  `json:"spec_reference"`
 	Evidence      []Evidence `json:"evidence"`
 	Impact        string     `json:"impact"`

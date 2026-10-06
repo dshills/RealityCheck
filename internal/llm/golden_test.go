@@ -16,55 +16,52 @@ import (
 const alignedResponse = `{
   "coverage": {
     "spec": [
-      {"id":"SPEC-001","status":"IMPLEMENTED","spec_reference":{"line_start":4,"line_end":4},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
-      {"id":"SPEC-002","status":"IMPLEMENTED","spec_reference":{"line_start":5,"line_end":5},"evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}]},
-      {"id":"SPEC-003","status":"IMPLEMENTED","spec_reference":{"line_start":6,"line_end":6},"evidence":[{"path":"store.go","symbol":"Delete","confidence":"HIGH"}]}
+      {"id":"SPEC-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
+      {"id":"SPEC-002","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}]},
+      {"id":"SPEC-003","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Delete","confidence":"HIGH"}]}
     ],
     "plan": [
-      {"id":"PLAN-001","status":"IMPLEMENTED","plan_reference":{"line_start":4,"line_end":4},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
-      {"id":"PLAN-002","status":"IMPLEMENTED","plan_reference":{"line_start":5,"line_end":5},"evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}]},
-      {"id":"PLAN-003","status":"IMPLEMENTED","plan_reference":{"line_start":6,"line_end":6},"evidence":[{"path":"store.go","symbol":"Delete","confidence":"HIGH"}]}
+      {"id":"PLAN-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
+      {"id":"PLAN-002","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}]},
+      {"id":"PLAN-003","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Delete","confidence":"HIGH"}]}
     ]
   },
   "drift": [],
-  "violations": [],
-  "meta": {"model":"mock","temperature":0.2}
+  "violations": []
 }`
 
 // driftResponse is the canned mock LLM response for the drift fixture.
 const driftResponse = `{
   "coverage": {
     "spec": [
-      {"id":"SPEC-001","status":"IMPLEMENTED","spec_reference":{"line_start":4,"line_end":4},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
-      {"id":"SPEC-002","status":"IMPLEMENTED","spec_reference":{"line_start":5,"line_end":5},"evidence":[]}
+      {"id":"SPEC-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]},
+      {"id":"SPEC-002","status":"IMPLEMENTED","evidence":[]}
     ],
     "plan": [
-      {"id":"PLAN-001","status":"IMPLEMENTED","plan_reference":{"line_start":4,"line_end":4},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}
+      {"id":"PLAN-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}
     ]
   },
   "drift": [
     {"id":"DRIFT-001","severity":"CRITICAL","description":"Unauthorized write endpoint Set present in code","evidence":[{"path":"store.go","symbol":"Set","confidence":"HIGH"}],"why_unjustified":"Spec explicitly forbids write operations","impact":"Spec violation","recommendation":"Remove Set method"}
   ],
-  "violations": [],
-  "meta": {"model":"mock","temperature":0.2}
+  "violations": []
 }`
 
 // violationResponse is the canned mock LLM response for the violation fixture.
 const violationResponse = `{
   "coverage": {
     "spec": [
-      {"id":"SPEC-001","status":"IMPLEMENTED","spec_reference":{"line_start":4,"line_end":4},"evidence":[]},
-      {"id":"SPEC-002","status":"NOT_IMPLEMENTED","spec_reference":{"line_start":5,"line_end":5},"evidence":[{"path":"handler.go","symbol":"SessionStore","confidence":"HIGH"}]}
+      {"id":"SPEC-001","status":"IMPLEMENTED","evidence":[]},
+      {"id":"SPEC-002","status":"NOT_IMPLEMENTED","evidence":[{"path":"handler.go","symbol":"SessionStore","confidence":"HIGH"}]}
     ],
     "plan": [
-      {"id":"PLAN-001","status":"IMPLEMENTED","plan_reference":{"line_start":4,"line_end":4},"evidence":[]}
+      {"id":"PLAN-001","status":"IMPLEMENTED","evidence":[]}
     ]
   },
   "drift": [],
   "violations": [
-    {"id":"VIOLATION-001","severity":"CRITICAL","description":"Session state persisted via SessionStore, violating stateless constraint","spec_reference":{"line_start":4,"line_end":4},"evidence":[{"path":"handler.go","symbol":"SessionStore","confidence":"HIGH"}],"impact":"Violates stateless constraint","blocking":true}
-  ],
-  "meta": {"model":"mock","temperature":0.2}
+    {"id":"VIOLATION-001","severity":"CRITICAL","description":"Session state persisted via SessionStore, violating stateless constraint","spec_id":"SPEC-001","evidence":[{"path":"handler.go","symbol":"SessionStore","confidence":"HIGH"}],"impact":"Violates stateless constraint","blocking":true}
+  ]
 }`
 
 func newMockProvider(response string) func(string, string) (Provider, error) {
@@ -159,6 +156,13 @@ func TestGolden_Violation(t *testing.T) {
 	}
 	if !v.Blocking {
 		t.Error("expected violation to be blocking")
+	}
+	// The reference is derived from spec_id, not taken from the model.
+	if v.SpecID != "SPEC-001" || v.SpecReference.LineStart != 5 || v.SpecReference.LineEnd != 5 {
+		t.Errorf("violation reference = %s %+v, want SPEC-001 lines 5-5", v.SpecID, v.SpecReference)
+	}
+	if v.Evidence[0].Confidence != schema.ConfidenceHigh {
+		t.Errorf("valid spec_id must not downgrade evidence, got %s", v.Evidence[0].Confidence)
 	}
 }
 

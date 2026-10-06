@@ -226,3 +226,29 @@ func FillMissing(cov *schema.Coverage, specItems, planItems []mdparse.Item, stri
 	}
 	return len(missSpec) + len(missPlan)
 }
+
+// ReferenceIndex maps each item ID to its line range. Quotes are not filled:
+// the ID and line range identify the item without repeating its text.
+func ReferenceIndex(items []mdparse.Item) map[string]schema.Reference {
+	refs := make(map[string]schema.Reference, len(items))
+	for _, it := range items {
+		refs[it.ID] = schema.Reference{LineStart: it.LineStart, LineEnd: it.LineEnd}
+	}
+	return refs
+}
+
+// ApplyReferences sets every entry's reference to the line range of its
+// parsed item, replacing anything the model supplied. The tool owns the
+// ID-to-line mapping, so references cannot be fabricated. Entries whose ID
+// is not among the items get an empty reference; call Normalize first so
+// there are none.
+func ApplyReferences(cov *schema.Coverage, specItems, planItems []mdparse.Item) {
+	specRefs := ReferenceIndex(specItems)
+	for i := range cov.Spec {
+		cov.Spec[i].SpecReference = specRefs[cov.Spec[i].ID]
+	}
+	planRefs := ReferenceIndex(planItems)
+	for i := range cov.Plan {
+		cov.Plan[i].PlanReference = planRefs[cov.Plan[i].ID]
+	}
+}
