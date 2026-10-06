@@ -81,6 +81,8 @@ Two conclusions drive the ordering below:
   mostly unnecessary.
 
 ### 4. Segment only normative items
+**Status: done.** Plan steps under a "Step N:" header are still separate items (header, bullets, done-when); grouping a whole step into one item would cut plan items further.
+
 **Accuracy · Tokens · Speed**
 - Classify each parsed item as *normative* (requirement/step) or
   *informational* (title, heading-like line, separator, prose intro such as

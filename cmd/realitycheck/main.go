@@ -16,6 +16,7 @@ import (
 	"github.com/dshills/realitycheck/internal/coverage"
 	"github.com/dshills/realitycheck/internal/drift"
 	"github.com/dshills/realitycheck/internal/llm"
+	"github.com/dshills/realitycheck/internal/mdparse"
 	"github.com/dshills/realitycheck/internal/plan"
 	"github.com/dshills/realitycheck/internal/profile"
 	"github.com/dshills/realitycheck/internal/render"
@@ -84,6 +85,7 @@ type checkFlags struct {
 	model             string
 	offline           bool
 	structuredOutput  bool
+	allItems          bool
 	verbose           bool
 	debug             bool
 }
@@ -120,6 +122,7 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.model, "model", "", "model ID (default varies by provider: claude-opus-4-6 / gpt-4o / gemini-2.0-flash) (env: REALITYCHECK_LLM_MODEL)")
 	cmd.Flags().BoolVar(&f.offline, "offline", false, "skip API key pre-flight check; use when operating with an injected mock provider or cached data")
 	cmd.Flags().BoolVar(&f.structuredOutput, "structured-output", true, "constrain model output with the provider's native JSON schema support; disable for models that reject it (env: REALITYCHECK_STRUCTURED_OUTPUT)")
+	cmd.Flags().BoolVar(&f.allItems, "all-items", false, "require coverage for every parsed item, not only requirements and plan steps (env: REALITYCHECK_ALL_ITEMS)")
 	cmd.Flags().BoolVar(&f.verbose, "verbose", false, "print execution trace to stderr")
 	cmd.Flags().BoolVar(&f.debug, "debug", false, "dump assembled prompt to stderr")
 
@@ -141,6 +144,7 @@ func newCheckCmd() *cobra.Command {
 //	REALITYCHECK_SEVERITY_THRESHOLD  --severity-threshold
 //	REALITYCHECK_STRICT              --strict (true/1/yes to enable)
 //	REALITYCHECK_STRUCTURED_OUTPUT   --structured-output (false/0/no to disable)
+//	REALITYCHECK_ALL_ITEMS           --all-items (true/1/yes to enable)
 func applyEnvDefaults(cmd *cobra.Command, f *checkFlags) {
 	envStr := func(flagName string, dst *string, envKey string) {
 		if !cmd.Flags().Changed(flagName) {
@@ -183,6 +187,7 @@ func applyEnvDefaults(cmd *cobra.Command, f *checkFlags) {
 	}
 	envBool("strict", &f.strict, "REALITYCHECK_STRICT")
 	envBool("structured-output", &f.structuredOutput, "REALITYCHECK_STRUCTURED_OUTPUT")
+	envBool("all-items", &f.allItems, "REALITYCHECK_ALL_ITEMS")
 }
 
 func runCheck(ctx context.Context, f checkFlags) error {
@@ -253,19 +258,23 @@ func runCheck(ctx context.Context, f checkFlags) error {
 
 	// Step 2: Parse SPEC.md.
 	logVerbose("parsing SPEC.md")
-	specItems, err := spec.Parse(f.specFile)
+	parseSpec, parsePlan := spec.Parse, plan.Parse
+	if f.allItems {
+		parseSpec, parsePlan = spec.ParseAllItems, plan.ParseAllItems
+	}
+	specItems, err := parseSpec(f.specFile)
 	if err != nil {
 		return &exitError{exitCodeBadInput, fmt.Sprintf("error: parse spec: %v", err)}
 	}
-	logVerbose(fmt.Sprintf("parsed %d spec items", len(specItems)))
+	logVerbose(fmt.Sprintf("parsed %d spec items (%d requirements)", len(specItems), len(mdparse.RequiredItems(specItems))))
 
 	// Step 3: Parse PLAN.md.
 	logVerbose("parsing PLAN.md")
-	planItems, err := plan.Parse(f.planFile)
+	planItems, err := parsePlan(f.planFile)
 	if err != nil {
 		return &exitError{exitCodeBadInput, fmt.Sprintf("error: parse plan: %v", err)}
 	}
-	logVerbose(fmt.Sprintf("parsed %d plan items", len(planItems)))
+	logVerbose(fmt.Sprintf("parsed %d plan items (%d steps)", len(planItems), len(mdparse.RequiredItems(planItems))))
 
 	// Step 4: Build code index.
 	logVerbose("building code index")
@@ -317,7 +326,7 @@ func runCheck(ctx context.Context, f checkFlags) error {
 		if f.strict {
 			status = schema.StatusNotImplemented
 		}
-		total := len(specItems) + len(planItems)
+		total := len(mdparse.RequiredItems(specItems)) + len(mdparse.RequiredItems(planItems))
 		fmt.Fprintf(os.Stderr,
 			"warning: model did not evaluate %d of %d spec/plan items; they are marked %s (notes: %q) and the score is provisional\n",
 			partial.Meta.UnevaluatedCount, total, status, coverage.NotEvaluatedNote)

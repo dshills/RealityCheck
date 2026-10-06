@@ -246,3 +246,27 @@ func TestCheck_GeminiAliasWithGeminiKey(t *testing.T) {
 		t.Errorf("provider = %q, want google", gotProvider)
 	}
 }
+
+func TestCheck_AllItemsOption(t *testing.T) {
+	g := &recordingGenerator{response: llm.Response{Text: completeResponse}}
+	install(t, g)
+	opts := baseOptions(t)
+	opts.SpecText = "Background prose.\n\n- The store must support Get.\n"
+
+	res, err := Check(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Report.Coverage.Spec) != 1 {
+		t.Errorf("default: spec entries = %d, want 1 (prose is context)", len(res.Report.Coverage.Spec))
+	}
+
+	opts.AllItems = true
+	res, err = Check(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Report.Coverage.Spec) != 2 {
+		t.Errorf("AllItems: spec entries = %d, want 2", len(res.Report.Coverage.Spec))
+	}
+}

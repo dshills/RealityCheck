@@ -460,3 +460,46 @@ func TestAnalyze_PassesSchemasOnlyWhenStructured(t *testing.T) {
 		}
 	}
 }
+
+// mixedItems returns spec items with informational context between
+// normative ones, as the parser produces them.
+func mixedItems() []spec.Item {
+	return []spec.Item{
+		{ID: "", LineStart: 1, LineEnd: 1, Text: "Intro prose.", Section: "Purpose"},
+		{ID: "SPEC-001", LineStart: 3, LineEnd: 3, Text: "Must do A.", Section: "Purpose", Normative: true},
+		{ID: "", LineStart: 5, LineEnd: 7, Text: "{ example }", Section: "Model"},
+		{ID: "SPEC-002", LineStart: 9, LineEnd: 9, Text: "Must do B.", Section: "Model", Normative: true},
+	}
+}
+
+func TestBuildUserPrompt_ContextAndSections(t *testing.T) {
+	got := buildUserPrompt(mixedItems(), nil, codeindex.Index{})
+	for _, want := range []string{
+		"## Purpose\n  · [1-1]: Intro prose.\n  SPEC-001 [3-3]: Must do A.\n",
+		"## Model\n  · [5-7]: { example }\n  SPEC-002 [9-9]: Must do B.\n",
+		"do not create coverage entries for them",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestAnalyze_ContextItemsNeedNoCoverage(t *testing.T) {
+	p := &recordingProvider{responses: []string{coverageJSON([]string{"SPEC-001", "SPEC-002"}, nil)}}
+	installRecorder(t, p)
+
+	r, err := runAnalyze(t, mixedItems(), nil, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.prompts) != 1 {
+		t.Errorf("calls = %d, want 1: context items must not trigger a completion call", len(p.prompts))
+	}
+	if !r.Meta.CoverageComplete || len(r.Coverage.Spec) != 2 {
+		t.Errorf("coverage = %+v, meta = %+v; want exactly the two normative items", r.Coverage.Spec, r.Meta)
+	}
+	if r.Coverage.Spec[1].SpecReference.LineStart != 9 {
+		t.Errorf("SPEC-002 reference = %+v", r.Coverage.Spec[1].SpecReference)
+	}
+}

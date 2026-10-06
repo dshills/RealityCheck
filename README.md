@@ -77,6 +77,7 @@ realitycheck check [path] [flags]
 --model <id>               Model ID (default: claude-opus-4-6 / gpt-4o / gemini-2.5-flash per provider)
 --max-tokens <n>           Output token limit (default: 16384)
 --structured-output=false  Send the schema in the prompt only, for models that reject native JSON schema
+--all-items                Require coverage for every parsed item, not only requirements and plan steps
 --offline                  Skip API key pre-flight check
 --verbose                  Print execution trace to stderr
 --debug                    Dump assembled prompt to stderr
@@ -120,6 +121,24 @@ Score starts at 100 and decreases deterministically:
 - Clamped to `[0, 100]`
 
 Scoring is always computed locally — never by the LLM.
+
+### Requirements vs. context
+
+SPEC.md and PLAN.md are split into items, and each item is classified:
+
+- **Requirements and plan steps** get an ID (`SPEC-001`, `PLAN-001`) and need a
+  coverage entry. These are list and step items, paragraphs with bullets,
+  tables, text with requirement language (*must*, *shall*, *required*, *never*,
+  *done when*, …), and paragraphs under sections such as Requirements,
+  Constraints, Behavior, Interface, or Flags.
+- **Context** — prose, intros ending in a colon, code blocks, and data
+  examples — is sent to the model without an ID, so it informs the analysis
+  but needs no coverage.
+
+Headings are not items. Besides `#` headings, short title-case lines and
+isolated numbered titles such as `6. Flags`, common in documents exported from
+word processors, are treated as section headings. Lone `⸻` or `—` lines are
+separators. Use `--all-items` to require coverage for every item instead.
 
 ### What the model produces vs. what the tool fills in
 

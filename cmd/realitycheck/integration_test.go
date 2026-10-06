@@ -304,3 +304,44 @@ func TestIntegration_UnknownProviderListsAliases(t *testing.T) {
 		t.Errorf("error should list aliases: %v", err)
 	}
 }
+
+func TestIntegration_AllItems(t *testing.T) {
+	dir := t.TempDir()
+	specPath := dir + "/SPEC.md"
+	planPath := dir + "/PLAN.md"
+	if err := os.WriteFile(specPath, []byte("Background prose about the service.\n\n- The store must support Get.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, []byte("1. Implement Get.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resp := `{"drift":[],"violations":[],"coverage":{"spec":[{"id":"SPEC-001","status":"IMPLEMENTED","evidence":[],"notes":""}],"plan":[{"id":"PLAN-001","status":"IMPLEMENTED","evidence":[],"notes":""}]}}`
+
+	for _, tc := range []struct {
+		all          bool
+		wantSpec     int
+		wantVerdict  schema.Verdict
+		wantComplete bool
+	}{
+		{false, 1, schema.VerdictAligned, true},          // prose is context only
+		{true, 2, schema.VerdictPartiallyAligned, false}, // prose numbered, unevaluated
+	} {
+		injectMock(t, []string{resp})
+		f := baseFlags(t, "aligned")
+		f.specFile, f.planFile, f.codeRoot = specPath, planPath, dir
+		f.allItems = tc.all
+
+		if err := runCheck(context.Background(), f); err != nil {
+			t.Fatalf("all=%v: %v", tc.all, err)
+		}
+		var report schema.Report
+		if err := json.Unmarshal(readOutput(t, f.out), &report); err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Coverage.Spec) != tc.wantSpec || report.Summary.Verdict != tc.wantVerdict || report.Meta.CoverageComplete != tc.wantComplete {
+			t.Errorf("all=%v: spec entries=%d verdict=%s complete=%v; want %d %s %v",
+				tc.all, len(report.Coverage.Spec), report.Summary.Verdict, report.Meta.CoverageComplete,
+				tc.wantSpec, tc.wantVerdict, tc.wantComplete)
+		}
+	}
+}

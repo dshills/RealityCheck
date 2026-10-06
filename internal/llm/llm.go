@@ -16,6 +16,7 @@ import (
 
 	"github.com/dshills/realitycheck/internal/codeindex"
 	"github.com/dshills/realitycheck/internal/coverage"
+	"github.com/dshills/realitycheck/internal/mdparse"
 	"github.com/dshills/realitycheck/internal/plan"
 	"github.com/dshills/realitycheck/internal/profile"
 	"github.com/dshills/realitycheck/internal/schema"
@@ -135,7 +136,8 @@ func (e ValidationError) Error() string {
 //   - completion: the first response was valid but omitted coverage entries
 //     for some spec or plan items, so only those items are sent back.
 //
-// Every parsed spec and plan item is accounted for in the returned report.
+// Every normative spec and plan item (one with an ID) is accounted for in
+// the returned report. Informational items are sent as context only.
 // Entries the model never produced are filled with placeholders and
 // Meta.CoverageComplete is set to false.
 func Analyze(
@@ -153,6 +155,11 @@ func Analyze(
 
 	sysPrompt := buildSystemPrompt(prof, opts.Strict)
 	userPrompt := buildUserPrompt(specItems, planItems, index)
+
+	// The prompt shows every item, with informational ones as context.
+	// Coverage is owed only for items that carry an ID.
+	specItems = mdparse.RequiredItems(specItems)
+	planItems = mdparse.RequiredItems(planItems)
 
 	if opts.Debug {
 		// Debug prints prompts to stderr. No redaction is needed because code
@@ -798,11 +805,12 @@ var outputSchema = `Output schema (JSON only). Emit the keys in this order: drif
 func buildUserPrompt(specItems []spec.Item, planItems []plan.Item, index codeindex.Index) string {
 	var sb strings.Builder
 
-	sb.WriteString("SPEC.md items (ID [line range]: text):\n")
-	writeItems(&sb, specItems)
+	sb.WriteString(documentLegend)
+	sb.WriteString("\nSPEC.md:\n")
+	writeDocument(&sb, specItems)
 
-	sb.WriteString("\nPLAN.md items (ID [line range]: text):\n")
-	writeItems(&sb, planItems)
+	sb.WriteString("\nPLAN.md:\n")
+	writeDocument(&sb, planItems)
 
 	sb.WriteString("\nCODE INVENTORY:\n")
 	sb.WriteString(index.Summary())
@@ -810,6 +818,30 @@ func buildUserPrompt(specItems []spec.Item, planItems []plan.Item, index codeind
 	sb.WriteString("\nProduce the JSON report now.")
 
 	return sb.String()
+}
+
+// documentLegend explains the document format to the model.
+const documentLegend = "Documents are listed item by item under their section headings (## Section).\n" +
+	"Requirements and plan steps appear as \"ID [line range]: text\" and each needs exactly one coverage entry.\n" +
+	"Lines starting with \"· [line range]:\" are context (prose, intros, examples): use them to understand intent, " +
+	"but do not create coverage entries for them.\n"
+
+// writeDocument writes items in document order under their section
+// headings. Normative items carry their ID; informational items are marked
+// as context with "·".
+func writeDocument(sb *strings.Builder, items []spec.Item) {
+	section := ""
+	for _, item := range items {
+		if item.Section != "" && item.Section != section {
+			fmt.Fprintf(sb, "  ## %s\n", item.Section)
+			section = item.Section
+		}
+		if item.ID != "" {
+			fmt.Fprintf(sb, "  %s [%d-%d]: %s\n", item.ID, item.LineStart, item.LineEnd, item.Text)
+		} else {
+			fmt.Fprintf(sb, "  · [%d-%d]: %s\n", item.LineStart, item.LineEnd, item.Text)
+		}
+	}
 }
 
 // writeItems writes one line per item: "  ID [start-end]: text".

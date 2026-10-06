@@ -83,6 +83,9 @@ type CheckOptions struct {
 	// for models that reject native JSON schema output. The zero value keeps
 	// native structured output on, matching the CLI default.
 	DisableStructuredOutput bool
+	// AllItems requires coverage for every parsed item, not only
+	// requirements and plan steps, like the CLI's --all-items flag.
+	AllItems bool
 }
 
 type CheckResult struct {
@@ -131,11 +134,15 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 		codeRoot = cwd
 	}
 
-	specItems, err := spec.Parse(specPath)
+	parseSpec, parsePlan := spec.Parse, plan.Parse
+	if opts.AllItems {
+		parseSpec, parsePlan = spec.ParseAllItems, plan.ParseAllItems
+	}
+	specItems, err := parseSpec(specPath)
 	if err != nil {
 		return nil, appError(ErrorInput, fmt.Errorf("parse spec: %w", err))
 	}
-	planItems, err := plan.Parse(planPath)
+	planItems, err := parsePlan(planPath)
 	if err != nil {
 		return nil, appError(ErrorInput, fmt.Errorf("parse plan: %w", err))
 	}

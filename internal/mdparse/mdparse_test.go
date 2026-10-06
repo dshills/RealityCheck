@@ -98,8 +98,8 @@ func TestIsDecorator(t *testing.T) {
 		{"===", true},
 		{"***", true},
 		{"___", true},
-		{"⸻", false}, // only 1 rune, < 3
-		{"——", false}, // only 2 em-dashes, < 3
+		{"⸻", true},  // wide dash glyphs separate sections alone
+		{"——", true}, // wide dash glyphs need no minimum count
 		{"ab-", false},
 		{"", false},
 		{"-", false},
@@ -144,9 +144,9 @@ func TestFencePrefix(t *testing.T) {
 		{"````", "````"},
 		{"~~~", "~~~"},
 		{"~~~~bash", "~~~~"},
-		{"    ```", ""}, // 4 leading spaces → indented code block
+		{"    ```", ""},   // 4 leading spaces → indented code block
 		{"   ```", "```"}, // 3 leading spaces → fence
-		{"``", ""},   // only 2 backticks
+		{"``", ""},        // only 2 backticks
 		{"", ""},
 	}
 	for _, c := range cases {
