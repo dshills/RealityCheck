@@ -393,3 +393,130 @@ func TestApplyEnvDefaults_InventoryFlags(t *testing.T) {
 		t.Errorf("flags should win: ignore=%q includeTests=%v", f.ignore, f.includeTests)
 	}
 }
+
+// injectSharedMock installs one provider for every run, so its calls can be
+// counted across runs (injectMock builds a fresh mock each time).
+func injectSharedMock(t *testing.T, responses []string) *mockMultiProvider {
+	t.Helper()
+	m := &mockMultiProvider{responses: responses}
+	orig := llm.NewProvider
+	llm.NewProvider = func(provider, model string) (llm.Provider, error) { return m, nil }
+	t.Cleanup(func() { llm.NewProvider = orig })
+	return m
+}
+
+func TestIntegration_CacheServesRepeatRun(t *testing.T) {
+	// One canned response: a second LLM call would fail.
+	mock := injectSharedMock(t, []string{alignedMockResponse})
+	cacheDir := t.TempDir()
+
+	f := baseFlags(t, "aligned")
+	f.cacheDir = cacheDir
+	if err := runCheck(context.Background(), f); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	var first schema.Report
+	if err := json.Unmarshal(readOutput(t, f.out), &first); err != nil {
+		t.Fatal(err)
+	}
+
+	f.out = tempOut(t)
+	if err := runCheck(context.Background(), f); err != nil {
+		t.Fatalf("repeat run should be served from cache: %v", err)
+	}
+	var second schema.Report
+	if err := json.Unmarshal(readOutput(t, f.out), &second); err != nil {
+		t.Fatal(err)
+	}
+	if first.Meta.Cached || !second.Meta.Cached {
+		t.Errorf("cached: first=%v second=%v, want false then true", first.Meta.Cached, second.Meta.Cached)
+	}
+	if second.Summary != first.Summary {
+		t.Errorf("cached summary %+v differs from %+v", second.Summary, first.Summary)
+	}
+	if mock.idx != 1 {
+		t.Errorf("provider called %d times, want 1", mock.idx)
+	}
+
+	// A different option is a different key, so it needs the provider.
+	f.out = tempOut(t)
+	f.strict = true
+	if code := exitCode(runCheck(context.Background(), f)); code != exitCodeAPIError {
+		t.Errorf("--strict should miss the cache and call the (exhausted) provider, got exit %d", code)
+	}
+}
+
+// clearRealityCheckEnv blanks REALITYCHECK_* variables so a command run in
+// a test sees only its own flags.
+func clearRealityCheckEnv(t *testing.T) {
+	t.Helper()
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "REALITYCHECK_") {
+			t.Setenv(name, "")
+		}
+	}
+}
+
+func TestCheckCmd_CachesByDefaultAndNoCacheBypasses(t *testing.T) {
+	clearRealityCheckEnv(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	mock := injectSharedMock(t, []string{alignedMockResponse})
+
+	run := func(extra ...string) error {
+		cmd := newCheckCmd()
+		args := []string{
+			"--spec", "../../testdata/aligned/SPEC.md", "--plan", "../../testdata/aligned/PLAN.md",
+			"--code-root", "../../testdata/aligned", "--model", "mock", "--offline", "--out", tempOut(t),
+		}
+		cmd.SetArgs(append(args, extra...))
+		return cmd.Execute()
+	}
+	if err := run(); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("repeat run should hit the default cache: %v", err)
+	}
+	if mock.idx != 1 {
+		t.Errorf("provider called %d times, want 1", mock.idx)
+	}
+	if code := exitCode(run("--no-cache")); code != exitCodeAPIError {
+		t.Errorf("--no-cache should call the (exhausted) provider, got exit %d", code)
+	}
+	t.Setenv("REALITYCHECK_NO_CACHE", "1")
+	if code := exitCode(run()); code != exitCodeAPIError {
+		t.Errorf("REALITYCHECK_NO_CACHE should bypass the cache, got exit %d", code)
+	}
+}
+
+func TestCacheCmd_ShowAndClear(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", xdg)
+	store, err := openDefaultCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(strings.Repeat("a", 64), []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(args ...string) string {
+		var out bytes.Buffer
+		cmd := newCacheCmd()
+		cmd.SetOut(&out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("cache %v: %v", args, err)
+		}
+		return out.String()
+	}
+	if got := run("show"); !strings.Contains(got, "entries:   1") || !strings.Contains(got, xdg) {
+		t.Errorf("show output:\n%s", got)
+	}
+	if got := run("clear"); !strings.Contains(got, "removed 1 cached results") {
+		t.Errorf("clear output:\n%s", got)
+	}
+	if got := run("show"); !strings.Contains(got, "entries:   0") {
+		t.Errorf("show after clear:\n%s", got)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/dshills/realitycheck/internal/cache"
 	"github.com/dshills/realitycheck/internal/codeindex"
 	"github.com/dshills/realitycheck/internal/coverage"
 	"github.com/dshills/realitycheck/internal/mdparse"
@@ -96,6 +97,10 @@ type Options struct {
 	// Warnf, if set, receives non-fatal diagnostics such as a failed
 	// coverage completion call. It may be nil.
 	Warnf func(format string, args ...any)
+	// Cache, if set, stores complete results and returns them, marked
+	// Meta.Cached, for runs whose prompts, options, code index, and tool
+	// build are unchanged. It may be nil.
+	Cache *cache.Store
 }
 
 // request builds a Request for this run.
@@ -140,6 +145,11 @@ func (e ValidationError) Error() string {
 // the returned report. Informational items are sent as context only.
 // Entries the model never produced are filled with placeholders and
 // Meta.CoverageComplete is set to false.
+//
+// With opts.Cache set, a stored result for the same prompts, options, code
+// index, and tool build is returned without calling the provider, with
+// Meta.Cached set. Only complete results are stored, so a provisional one
+// is retried on the next run.
 func Analyze(
 	ctx context.Context,
 	specItems []spec.Item,
@@ -148,19 +158,9 @@ func Analyze(
 	prof profile.Profile,
 	opts Options,
 ) (*schema.PartialReport, error) {
-	provider, err := NewProvider(opts.Provider, opts.Model)
-	if err != nil {
-		return nil, fmt.Errorf("llm: create provider: %w", err)
-	}
-
 	sysPrompt := buildSystemPrompt(prof, opts.Strict)
 	inventory := index.Render()
 	userPrompt := buildUserPrompt(specItems, planItems, inventory.Text)
-
-	// The prompt shows every item, with informational ones as context.
-	// Coverage is owed only for items that carry an ID.
-	specItems = mdparse.RequiredItems(specItems)
-	planItems = mdparse.RequiredItems(planItems)
 
 	if opts.Debug {
 		// Debug prints prompts to stderr. No redaction is needed because code
@@ -169,6 +169,49 @@ func Analyze(
 		fmt.Fprintf(os.Stderr, "=== DEBUG: system prompt ===\n%s\n", sysPrompt)
 		fmt.Fprintf(os.Stderr, "=== DEBUG: user prompt ===\n%s\n", userPrompt)
 	}
+
+	key := ""
+	if opts.Cache != nil {
+		key = cacheKey(sysPrompt, userPrompt, index, opts)
+	}
+	if key != "" {
+		if report, ok := loadCached(opts.Cache, key, index, specItems, planItems); ok {
+			if opts.Debug {
+				fmt.Fprintf(os.Stderr, "=== DEBUG: cache hit %s ===\n", key)
+			}
+			return report, nil
+		}
+	}
+
+	report, err := analyze(ctx, specItems, planItems, index, prof, opts, sysPrompt, userPrompt, inventory)
+	if err == nil && key != "" && report.Meta.CoverageComplete {
+		if err := storeCached(opts.Cache, key, report); err != nil {
+			opts.warnf("%v", err)
+		}
+	}
+	return report, err
+}
+
+// analyze runs the model calls behind Analyze.
+func analyze(
+	ctx context.Context,
+	specItems []spec.Item,
+	planItems []plan.Item,
+	index codeindex.Index,
+	prof profile.Profile,
+	opts Options,
+	sysPrompt, userPrompt string,
+	inventory codeindex.Rendered,
+) (*schema.PartialReport, error) {
+	provider, err := NewProvider(opts.Provider, opts.Model)
+	if err != nil {
+		return nil, fmt.Errorf("llm: create provider: %w", err)
+	}
+
+	// The prompt shows every item, with informational ones as context.
+	// Coverage is owed only for items that carry an ID.
+	specItems = mdparse.RequiredItems(specItems)
+	planItems = mdparse.RequiredItems(planItems)
 
 	resp, err := generate(ctx, provider, opts.request(sysPrompt, userPrompt, reportSchema))
 	if err != nil {

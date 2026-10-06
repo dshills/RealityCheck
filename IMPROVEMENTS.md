@@ -127,6 +127,13 @@ Two conclusions drive the ordering below:
 
 ### 7. Content-addressed result cache
 **Speed · Tokens**
+**Status: done.** The key hashes the exact prompts plus the options, the full
+code index, and the tool build (a hash of the binary), which covers every
+item listed below. Provisional results are not cached, and a hit must cover
+exactly the run's required items. Live
+on the drift fixture: 12.0 s → 0.07 s on a hit; a comment edit still hits, a
+signature change misses. The library opts in with `CheckOptions.CacheDir`.
+There is no eviction yet: `cache show` reports the size, `cache clear` empties it.
 - Key: hash(spec text, plan text, inventory summary, profile, strict, provider,
   model, temperature, tool version). Store under `$XDG_CACHE_HOME/realitycheck/`.
   On hit, re-run the deterministic steps (strict escalation, scoring, filtering,

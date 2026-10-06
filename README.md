@@ -81,6 +81,7 @@ realitycheck check [path] [flags]
 --ignore <glob>            Leave paths out of the code inventory (repeatable, comma-separated)
 --include-tests=false      Leave test files and test functions out of the code inventory
 --offline                  Skip API key pre-flight check
+--no-cache                 Do not read or write the result cache
 --verbose                  Print execution trace to stderr
 --debug                    Dump assembled prompt to stderr
 ```
@@ -99,6 +100,34 @@ realitycheck check \
 realitycheck check --spec SPEC.md --plan PLAN.md --code-root . --provider openai --format md
 realitycheck check --spec SPEC.md --plan PLAN.md --code-root . --provider google --format md
 ```
+
+### Result cache
+
+A complete result is cached in `$XDG_CACHE_HOME/realitycheck/` (or
+`realitycheck` under the platform's user cache directory, e.g.
+`~/Library/Caches` on macOS). A later run whose prompts, options, code index,
+and tool build all match is answered from the cache in milliseconds, with no
+LLM call and `meta.cached: true`; strict escalation, scoring, severity
+filtering, and rendering still run. The key covers the spec and plan items, the
+inventory (paths, symbols, signatures, tests, manifests), the profile, strict
+mode, provider, model, temperature, max tokens, structured output, and the tool
+build (a hash of the `realitycheck` binary, so upgrading or rebuilding starts
+fresh). Edits that leave the inventory unchanged, such as comments, function
+bodies, or doc contents, therefore hit the cache; changing a signature,
+adding a file, or editing the spec misses it.
+
+Provisional results (`meta.coverage_complete: false`) are never cached, so the
+next run retries them. Because the model is not deterministic, a repeat run
+returns the cached judgment rather than a fresh sample; pass `--no-cache` (or
+set `REALITYCHECK_NO_CACHE=1`) to ask again.
+
+```bash
+realitycheck cache show    # directory, entry count, size
+realitycheck cache clear   # remove all cached results
+```
+
+The library caches only when `CheckOptions.CacheDir` is set
+(`realitycheck.DefaultCacheDir()` returns the CLI's directory).
 
 ---
 
@@ -271,6 +300,7 @@ internal/schema/      Canonical data types
 internal/spec/        SPEC.md parser
 internal/plan/        PLAN.md parser
 internal/codeindex/   Code inventory (symbols, tests, manifests)
+internal/cache/       On-disk result cache
 internal/profile/     Enforcement profiles
 internal/llm/         LLM provider, prompt builder, response validator
 internal/coverage/    Coverage analysis helpers
@@ -349,3 +379,4 @@ go vet ./...
 - No telemetry emitted by default
 - Raw code is **never** sent to the LLM — only file paths, symbol names, Go declaration signatures (no bodies or comments), and dependency manifest text
 - `--debug` prints the assembled prompt to stderr (no redaction needed since code content is absent)
+- Cached results hold the model's findings (descriptions, evidence paths and symbols), never source; the cache directory is kept `0700` (an existing permissive one is tightened, or caching is disabled) and entries are `0600`

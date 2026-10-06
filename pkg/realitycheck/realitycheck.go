@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dshills/realitycheck/internal/cache"
 	"github.com/dshills/realitycheck/internal/codeindex"
 	"github.com/dshills/realitycheck/internal/drift"
 	"github.com/dshills/realitycheck/internal/llm"
@@ -90,7 +91,20 @@ type CheckOptions struct {
 	// CLI's --include-tests=false. IgnorePatterns uses the same glob rules
 	// as the CLI's --ignore.
 	ExcludeTests bool
+	// CacheDir enables the result cache in that directory: a run whose
+	// prompts, options, code index, and tool build match an earlier
+	// complete run returns its result without an LLM call, with
+	// Meta.Cached set. Empty (the default) disables caching. A directory
+	// that cannot be used (not creatable, or writable by other users) fails
+	// Check with ErrorInternal rather than silently running uncached. The
+	// CLI uses DefaultCacheDir unless --no-cache is given, and runs uncached
+	// with a warning instead.
+	CacheDir string
 }
+
+// DefaultCacheDir is the CLI's cache directory: $XDG_CACHE_HOME/realitycheck,
+// or realitycheck under the platform's user cache directory.
+func DefaultCacheDir() (string, error) { return cache.DefaultDir() }
 
 type CheckResult struct {
 	Report *Report
@@ -162,7 +176,7 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 		return nil, appError(ErrorInput, err)
 	}
 
-	partial, err := llm.Analyze(ctx, specItems, planItems, index, prof, llm.Options{
+	llmOpts := llm.Options{
 		Provider:         opts.Provider,
 		Strict:           opts.Strict,
 		MaxTokens:        opts.MaxTokens,
@@ -170,7 +184,15 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 		Model:            opts.Model,
 		Debug:            opts.Debug,
 		StructuredOutput: !opts.DisableStructuredOutput,
-	})
+	}
+	if opts.CacheDir != "" {
+		store, err := cache.Open(opts.CacheDir)
+		if err != nil {
+			return nil, appError(ErrorInternal, err)
+		}
+		llmOpts.Cache = store
+	}
+	partial, err := llm.Analyze(ctx, specItems, planItems, index, prof, llmOpts)
 	if err != nil {
 		if errors.Is(err, llm.ErrInvalidModelOutput) {
 			return nil, appError(ErrorModelOutput, err)

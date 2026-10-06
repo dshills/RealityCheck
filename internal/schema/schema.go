@@ -159,6 +159,10 @@ type Meta struct {
 	InventorySymbolsOmitted int  `json:"inventory_symbols_omitted,omitempty"`
 	InventoryTestsOmitted   int  `json:"inventory_tests_omitted,omitempty"`
 	InventoryFilesOmitted   int  `json:"inventory_files_omitted,omitempty"`
+	// Cached is true when the result came from the local result cache: the
+	// prompts, options, code index, and tool build matched an earlier
+	// complete run, so no LLM call was made.
+	Cached bool `json:"cached,omitempty"`
 }
 
 // PartialReport contains only the fields populated by the LLM.

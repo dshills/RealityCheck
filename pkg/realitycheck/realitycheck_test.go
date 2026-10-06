@@ -300,3 +300,35 @@ func TestCheck_InventoryOptions(t *testing.T) {
 		}
 	}
 }
+
+func TestCheck_CacheDirIsOptIn(t *testing.T) {
+	g := &recordingGenerator{response: llm.Response{Text: completeResponse}}
+	install(t, g)
+	opts := baseOptions(t)
+
+	// Without CacheDir, every run calls the provider.
+	for i := 0; i < 2; i++ {
+		if _, err := Check(context.Background(), opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(g.got) != 2 {
+		t.Fatalf("provider calls without CacheDir = %d, want 2", len(g.got))
+	}
+
+	opts.CacheDir = filepath.Join(t.TempDir(), "cache")
+	first, err := Check(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Check(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.got) != 3 {
+		t.Errorf("provider calls with CacheDir = %d, want 3 (one more)", len(g.got))
+	}
+	if first.Report.Meta.Cached || !second.Report.Meta.Cached {
+		t.Errorf("cached: first=%v second=%v", first.Report.Meta.Cached, second.Report.Meta.Cached)
+	}
+}
