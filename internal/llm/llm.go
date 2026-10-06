@@ -15,6 +15,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/dshills/realitycheck/internal/codeindex"
+	"github.com/dshills/realitycheck/internal/coverage"
 	"github.com/dshills/realitycheck/internal/plan"
 	"github.com/dshills/realitycheck/internal/profile"
 	"github.com/dshills/realitycheck/internal/schema"
@@ -43,6 +44,15 @@ type Options struct {
 	Temperature float64
 	Model       string
 	Debug       bool
+	// Warnf, if set, receives non-fatal diagnostics such as a failed
+	// coverage completion call. It may be nil.
+	Warnf func(format string, args ...any)
+}
+
+func (o Options) warnf(format string, args ...any) {
+	if o.Warnf != nil {
+		o.Warnf(format, args...)
+	}
 }
 
 // ValidationError records a single validation failure on an LLM response.
@@ -56,7 +66,17 @@ func (e ValidationError) Error() string {
 }
 
 // Analyze builds a prompt, calls the LLM, validates the response, and performs
-// one repair attempt if validation fails. Returns a PartialReport or an error.
+// at most one follow-up call. Returns a PartialReport or an error.
+//
+// The follow-up call is used for one of two purposes, never both:
+//   - repair: the first response could not be parsed or lacked required
+//     fields, so the full prompt is re-sent with the validation errors;
+//   - completion: the first response was valid but omitted coverage entries
+//     for some spec or plan items, so only those items are sent back.
+//
+// Every parsed spec and plan item is accounted for in the returned report.
+// Entries the model never produced are filled with placeholders and
+// Meta.CoverageComplete is set to false.
 func Analyze(
 	ctx context.Context,
 	specItems []spec.Item,
@@ -87,26 +107,102 @@ func Analyze(
 	}
 
 	report, validationErrs := ValidateResponse(raw, index)
-	if report != nil && !needsRepair(validationErrs) {
-		// Non-fatal validation errors (e.g., evidence path mismatches) were
-		// applied in-place by ValidateResponse; return the adjusted report.
-		return report, nil
-	}
-
-	// One repair attempt: include the original prompt and the invalid response
-	// so the LLM has full context.
-	repairPrompt := buildRepairPrompt(userPrompt, raw, validationErrs)
-	raw2, err := provider.Complete(ctx, sysPrompt, repairPrompt, opts.MaxTokens, opts.Temperature)
-	if err != nil {
-		return nil, fmt.Errorf("llm: repair complete: %w", err)
-	}
-
-	report2, validationErrs2 := ValidateResponse(raw2, index)
-	if report2 != nil && !needsRepair(validationErrs2) {
+	if report == nil || needsRepair(validationErrs) {
+		// One repair attempt: include the original prompt and the invalid
+		// response so the LLM has full context. This consumes the follow-up
+		// call, so no completion call is made afterwards.
+		repairPrompt := buildRepairPrompt(userPrompt, raw, validationErrs)
+		raw2, err := provider.Complete(ctx, sysPrompt, repairPrompt, opts.MaxTokens, opts.Temperature)
+		if err != nil {
+			return nil, fmt.Errorf("llm: repair complete: %w", err)
+		}
+		report2, validationErrs2 := ValidateResponse(raw2, index)
+		if report2 == nil || needsRepair(validationErrs2) {
+			return nil, ErrInvalidModelOutput
+		}
+		report2.Meta.ResponseTruncated = hasTruncation(validationErrs2)
+		finalizeCoverage(report2, specItems, planItems, opts)
 		return report2, nil
 	}
 
-	return nil, ErrInvalidModelOutput
+	// Non-fatal validation errors (e.g., evidence path mismatches) were
+	// applied in-place by ValidateResponse.
+	report.Meta.ResponseTruncated = hasTruncation(validationErrs)
+	logDropped(coverage.Normalize(&report.Coverage, specItems, planItems), opts)
+
+	missSpec, missPlan := coverage.Missing(report.Coverage, specItems, planItems)
+	if len(missSpec)+len(missPlan) > 0 {
+		completeCoverage(ctx, provider, prof, report, missSpec, missPlan, specItems, planItems, index, opts)
+	}
+
+	finalizeCoverage(report, specItems, planItems, opts)
+	return report, nil
+}
+
+// completeCoverage asks the model for coverage entries for the missing items
+// only and merges any valid entries into report. Failures are non-fatal: the
+// report from the first call is already valid, and finalizeCoverage fills
+// whatever is still missing.
+func completeCoverage(
+	ctx context.Context,
+	provider Provider,
+	prof profile.Profile,
+	report *schema.PartialReport,
+	missSpec, missPlan []spec.Item,
+	specItems []spec.Item,
+	planItems []plan.Item,
+	index codeindex.Index,
+	opts Options,
+) {
+	sysPrompt := buildCompletionSystemPrompt(prof, opts.Strict)
+	userPrompt := buildCompletionPrompt(missSpec, missPlan, index)
+	if opts.Debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: completion system prompt ===\n%s\n", sysPrompt)
+		fmt.Fprintf(os.Stderr, "=== DEBUG: completion user prompt ===\n%s\n", userPrompt)
+	}
+
+	raw, err := provider.Complete(ctx, sysPrompt, userPrompt, opts.MaxTokens, opts.Temperature)
+	if err != nil {
+		opts.warnf("coverage completion call failed: %v", err)
+		return
+	}
+	extra, errs := validateCompletion(raw, index)
+	if extra == nil {
+		opts.warnf("coverage completion response was unusable: %v", errs)
+		return
+	}
+	if hasTruncation(errs) {
+		report.Meta.ResponseTruncated = true
+	}
+
+	// Existing entries come first, so Normalize keeps them over any
+	// re-assessment the model volunteered for already-covered IDs.
+	report.Coverage.Spec = append(report.Coverage.Spec, extra.Spec...)
+	report.Coverage.Plan = append(report.Coverage.Plan, extra.Plan...)
+	for _, d := range coverage.Normalize(&report.Coverage, specItems, planItems) {
+		if d.Reason != "duplicate entry" {
+			opts.warnf("coverage completion: dropped entry %q: %s", d.ID, d.Reason)
+		}
+	}
+}
+
+// finalizeCoverage reconciles report coverage with the parsed items, fills
+// placeholders for anything still missing, and records completeness in Meta.
+// It also sets Meta.Model and Meta.Temperature from opts: the model's own
+// values are unreliable and, with meta emitted last, often truncated away.
+func finalizeCoverage(report *schema.PartialReport, specItems []spec.Item, planItems []plan.Item, opts Options) {
+	report.Meta.Model = opts.Model
+	report.Meta.Temperature = opts.Temperature
+	logDropped(coverage.Normalize(&report.Coverage, specItems, planItems), opts)
+	filled := coverage.FillMissing(&report.Coverage, specItems, planItems, opts.Strict)
+	report.Meta.CoverageComplete = filled == 0
+	report.Meta.UnevaluatedCount = filled
+}
+
+func logDropped(dropped []coverage.Dropped, opts Options) {
+	for _, d := range dropped {
+		opts.warnf("dropped coverage entry %q: %s", d.ID, d.Reason)
+	}
 }
 
 // needsRepair returns true when validation errors include a parse or
@@ -156,23 +252,34 @@ func stripMarkdownFences(s string) string {
 func ValidateResponse(raw string, index codeindex.Index) (*schema.PartialReport, []ValidationError) {
 	var errs []ValidationError
 
-	raw = stripMarkdownFences(raw)
-
-	// 1. JSON parse. If parsing fails due to invalid escape sequences (common
-	// when LLM output includes regex patterns like \d+ inside JSON strings),
-	// attempt a one-shot sanitization before giving up.
+	// 1. JSON parse.
 	var report schema.PartialReport
-	if err := json.Unmarshal([]byte(raw), &report); err != nil {
-		fixed := fixInvalidJSONEscapes(raw)
-		if err2 := json.Unmarshal([]byte(fixed), &report); err2 != nil {
+	salvaged, err := parseModelJSON(raw, &report)
+	if err != nil {
+		errs = append(errs, ValidationError{
+			Field:   "json_parse",
+			Message: err.Error(),
+		})
+		return nil, errs
+	}
+	if salvaged != nil {
+		// A truncated response is usable only if the findings were emitted
+		// in full; otherwise the cut may have hidden drift or violations.
+		// Coverage cut short is acceptable: missing entries are completed
+		// or filled by Analyze.
+		if !salvaged.CompleteTopLevel["drift"] || !salvaged.CompleteTopLevel["violations"] {
 			errs = append(errs, ValidationError{
 				Field:   "json_parse",
-				Message: err.Error(),
+				Message: "response was truncated before drift and violations were complete",
 			})
 			return nil, errs
 		}
-		// Sanitized successfully; continue with the fixed payload.
-		raw = fixed
+		if report.Coverage.Spec == nil {
+			report.Coverage.Spec = []schema.SpecCoverageEntry{}
+		}
+		if report.Coverage.Plan == nil {
+			report.Coverage.Plan = []schema.PlanCoverageEntry{}
+		}
 	}
 
 	// 2. Required field check.
@@ -191,6 +298,13 @@ func ValidateResponse(raw string, index codeindex.Index) (*schema.PartialReport,
 	if len(errs) > 0 {
 		return nil, errs
 	}
+	if salvaged != nil {
+		// Recorded after the required-field check: it is non-fatal.
+		errs = append(errs, ValidationError{
+			Field:   fieldTruncated,
+			Message: "response was truncated; recovered the complete prefix",
+		})
+	}
 
 	// 3. Enum validation.
 	errs = append(errs, validateEnums(&report)...)
@@ -203,6 +317,70 @@ func ValidateResponse(raw string, index codeindex.Index) (*schema.PartialReport,
 	validateEvidencePaths(&report, filePaths, &errs)
 
 	return &report, errs
+}
+
+// parseModelJSON strips markdown fences from raw and unmarshals it into v.
+// If parsing fails due to invalid escape sequences (common when LLM output
+// includes regex patterns like \d+ inside JSON strings), a one-shot
+// sanitization is attempted. If the response was cut off mid-stream, the
+// complete prefix is salvaged (see salvageTruncatedJSON) and the returned
+// *salvageResult is non-nil. The original parse error is returned when
+// nothing works.
+func parseModelJSON(raw string, v any) (*salvageResult, error) {
+	raw = stripMarkdownFences(raw)
+	err := json.Unmarshal([]byte(raw), v)
+	if err == nil {
+		return nil, nil
+	}
+	fixed := fixInvalidJSONEscapes(raw)
+	if err2 := json.Unmarshal([]byte(fixed), v); err2 == nil {
+		return nil, nil
+	}
+	if sr, ok := salvageTruncatedJSON(fixed); ok {
+		if err3 := json.Unmarshal([]byte(sr.JSON), v); err3 == nil {
+			return &sr, nil
+		}
+	}
+	return nil, err
+}
+
+// fieldTruncated marks a non-fatal ValidationError recording that the
+// response was cut off and only its complete prefix was used.
+const fieldTruncated = "truncated"
+
+func hasTruncation(errs []ValidationError) bool {
+	for _, e := range errs {
+		if e.Field == fieldTruncated {
+			return true
+		}
+	}
+	return false
+}
+
+// validateCompletion parses a coverage completion response. It returns nil
+// coverage only when the response cannot be parsed. Missing spec or plan
+// arrays are allowed (the model may have had only one kind of item to
+// assess). Fabricated evidence paths are downgraded to LOW confidence as in
+// ValidateResponse; unknown IDs and invalid statuses are left for
+// coverage.Normalize to drop.
+func validateCompletion(raw string, index codeindex.Index) (*schema.Coverage, []ValidationError) {
+	var resp struct {
+		Coverage schema.Coverage `json:"coverage"`
+	}
+	salvaged, err := parseModelJSON(raw, &resp)
+	if err != nil {
+		return nil, []ValidationError{{Field: "json_parse", Message: err.Error()}}
+	}
+	var errs []ValidationError
+	if salvaged != nil {
+		errs = append(errs, ValidationError{
+			Field:   fieldTruncated,
+			Message: "completion response was truncated; recovered the complete prefix",
+		})
+	}
+	wrapper := schema.PartialReport{Coverage: resp.Coverage}
+	validateEvidencePaths(&wrapper, indexFilePaths(index), &errs)
+	return &wrapper.Coverage, errs
 }
 
 // indexFilePaths builds a set of all file paths in the index.
@@ -257,7 +435,7 @@ func validateEnums(r *schema.PartialReport) []ValidationError {
 		schema.ConfidenceHigh:   true,
 		schema.ConfidenceMedium: true,
 		schema.ConfidenceLow:    true,
-		"": true, // omitempty — confidence is optional on evidence entries
+		"":                      true, // omitempty — confidence is optional on evidence entries
 	}
 
 	for i, e := range r.Coverage.Spec {
@@ -367,10 +545,34 @@ func validateEvidencePaths(r *schema.PartialReport, filePaths map[string]bool, e
 	}
 }
 
-// buildSystemPrompt assembles the LLM system prompt.
+// buildSystemPrompt assembles the LLM system prompt for the main analysis.
 func buildSystemPrompt(prof profile.Profile, strict bool) string {
 	var sb strings.Builder
+	writePromptRules(&sb, prof, strict)
+	sb.WriteString("Every drift finding and violation MUST cite at least one path from the CODE INVENTORY.\n\n")
+	sb.WriteString(coverageCompletenessRule)
+	sb.WriteString(outputSchema)
+	return sb.String()
+}
 
+// buildCompletionSystemPrompt assembles the system prompt for the coverage
+// completion call, which asks only for coverage entries.
+func buildCompletionSystemPrompt(prof profile.Profile, strict bool) string {
+	var sb strings.Builder
+	writePromptRules(&sb, prof, strict)
+	sb.WriteString(coverageCompletenessRule)
+	sb.WriteString(completionSchema)
+	return sb.String()
+}
+
+// coverageCompletenessRule tells the model that coverage must be exhaustive.
+const coverageCompletenessRule = "coverage.spec MUST contain exactly one entry for every SPEC ID listed, " +
+	"and coverage.plan MUST contain exactly one entry for every PLAN ID listed. " +
+	"Use the IDs exactly as given. Do not skip items and do not invent IDs. " +
+	"If an item is not a verifiable requirement or step, mark it UNCLEAR and say so in notes.\n\n"
+
+// writePromptRules writes the rules shared by every system prompt.
+func writePromptRules(sb *strings.Builder, prof profile.Profile, strict bool) {
 	sb.WriteString("You are RealityCheck, an intent enforcement analyzer.\n\n")
 
 	sb.WriteString("Output ONLY valid JSON conforming to the schema below. " +
@@ -379,8 +581,6 @@ func buildSystemPrompt(prof profile.Profile, strict bool) string {
 	sb.WriteString("Only cite file paths that appear in the CODE INVENTORY below. " +
 		"Never fabricate paths or symbol names. " +
 		"If you cannot find evidence, set evidence to [] and state uncertainty in the notes field.\n\n")
-
-	sb.WriteString("Every drift finding and violation MUST cite at least one path from the CODE INVENTORY.\n\n")
 
 	if strict {
 		sb.WriteString("Strict mode is active. Do not infer intent. " +
@@ -392,21 +592,17 @@ func buildSystemPrompt(prof profile.Profile, strict bool) string {
 		sb.WriteString(prof.SystemPromptAddendum)
 		sb.WriteString("\n\n")
 	}
-
-	sb.WriteString(outputSchema)
-
-	return sb.String()
 }
 
-// outputSchema is the JSON schema fragment shown to the LLM.
-const outputSchema = `Output schema (JSON only):
+// completionSchema is the JSON schema fragment for the coverage completion call.
+const completionSchema = `Output schema (JSON only):
 {
   "coverage": {
     "spec": [
       {
         "id": "SPEC-001",
         "status": "IMPLEMENTED|PARTIAL|NOT_IMPLEMENTED|UNCLEAR",
-        "spec_reference": {"line_start": 1, "line_end": 2, "quote": "..."},
+        "spec_reference": {"line_start": 1, "line_end": 2},
         "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}],
         "notes": "optional explanation"
       }
@@ -415,12 +611,18 @@ const outputSchema = `Output schema (JSON only):
       {
         "id": "PLAN-001",
         "status": "IMPLEMENTED|PARTIAL|NOT_IMPLEMENTED|UNCLEAR",
-        "plan_reference": {"line_start": 1, "line_end": 2, "quote": "..."},
+        "plan_reference": {"line_start": 1, "line_end": 2},
         "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}],
         "notes": "optional explanation"
       }
     ]
-  },
+  }
+}
+`
+
+// outputSchema is the JSON schema fragment shown to the LLM.
+const outputSchema = `Output schema (JSON only). Emit the keys in this order: drift, violations, coverage, meta.
+{
   "drift": [
     {
       "id": "DRIFT-001",
@@ -443,6 +645,26 @@ const outputSchema = `Output schema (JSON only):
       "blocking": true
     }
   ],
+  "coverage": {
+    "spec": [
+      {
+        "id": "SPEC-001",
+        "status": "IMPLEMENTED|PARTIAL|NOT_IMPLEMENTED|UNCLEAR",
+        "spec_reference": {"line_start": 1, "line_end": 2, "quote": "..."},
+        "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}],
+        "notes": "optional explanation"
+      }
+    ],
+    "plan": [
+      {
+        "id": "PLAN-001",
+        "status": "IMPLEMENTED|PARTIAL|NOT_IMPLEMENTED|UNCLEAR",
+        "plan_reference": {"line_start": 1, "line_end": 2, "quote": "..."},
+        "evidence": [{"path": "relative/file.go", "symbol": "FuncName", "confidence": "HIGH|MEDIUM|LOW"}],
+        "notes": "optional explanation"
+      }
+    ]
+  },
   "meta": {
     "model": "<model-name>",
     "temperature": 0.2
@@ -454,21 +676,46 @@ const outputSchema = `Output schema (JSON only):
 func buildUserPrompt(specItems []spec.Item, planItems []plan.Item, index codeindex.Index) string {
 	var sb strings.Builder
 
-	sb.WriteString("SPEC.md (with line numbers):\n")
-	for _, item := range specItems {
-		fmt.Fprintf(&sb, "  %d-%d: %s\n", item.LineStart, item.LineEnd, item.Text)
-	}
+	sb.WriteString("SPEC.md items (ID [line range]: text):\n")
+	writeItems(&sb, specItems)
 
-	sb.WriteString("\nPLAN.md (with line numbers):\n")
-	for _, item := range planItems {
-		fmt.Fprintf(&sb, "  %d-%d: %s\n", item.LineStart, item.LineEnd, item.Text)
-	}
+	sb.WriteString("\nPLAN.md items (ID [line range]: text):\n")
+	writeItems(&sb, planItems)
 
 	sb.WriteString("\nCODE INVENTORY:\n")
 	sb.WriteString(index.Summary())
 
 	sb.WriteString("\nProduce the JSON report now.")
 
+	return sb.String()
+}
+
+// writeItems writes one line per item: "  ID [start-end]: text".
+func writeItems(sb *strings.Builder, items []spec.Item) {
+	for _, item := range items {
+		fmt.Fprintf(sb, "  %s [%d-%d]: %s\n", item.ID, item.LineStart, item.LineEnd, item.Text)
+	}
+}
+
+// buildCompletionPrompt asks for coverage of the given items only. The full
+// spec and plan are not re-sent; the missing items carry their own text.
+func buildCompletionPrompt(missSpec, missPlan []spec.Item, index codeindex.Index) string {
+	var sb strings.Builder
+	sb.WriteString("A previous analysis pass did not assess the items below. " +
+		"Assess only these items and return exactly one coverage entry for each ID.\n\n")
+	if len(missSpec) > 0 {
+		sb.WriteString("SPEC.md items to assess (ID [line range]: text):\n")
+		writeItems(&sb, missSpec)
+		sb.WriteString("\n")
+	}
+	if len(missPlan) > 0 {
+		sb.WriteString("PLAN.md items to assess (ID [line range]: text):\n")
+		writeItems(&sb, missPlan)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("CODE INVENTORY:\n")
+	sb.WriteString(index.Summary())
+	sb.WriteString("\nProduce the JSON coverage now.")
 	return sb.String()
 }
 

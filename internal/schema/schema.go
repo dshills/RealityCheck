@@ -5,10 +5,10 @@ package schema
 type Verdict string
 
 const (
-	VerdictAligned         Verdict = "ALIGNED"
+	VerdictAligned          Verdict = "ALIGNED"
 	VerdictPartiallyAligned Verdict = "PARTIALLY_ALIGNED"
-	VerdictDriftDetected   Verdict = "DRIFT_DETECTED"
-	VerdictViolation       Verdict = "VIOLATION"
+	VerdictDriftDetected    Verdict = "DRIFT_DETECTED"
+	VerdictViolation        Verdict = "VIOLATION"
 )
 
 // CoverageStatus represents the implementation status of a spec or plan item.
@@ -41,23 +41,23 @@ const (
 
 // Report is the top-level output document.
 type Report struct {
-	Tool       string     `json:"tool"`
-	Version    string     `json:"version"`
-	Input      Input      `json:"input"`
-	Summary    Summary    `json:"summary"`
-	Coverage   Coverage   `json:"coverage"`
+	Tool       string         `json:"tool"`
+	Version    string         `json:"version"`
+	Input      Input          `json:"input"`
+	Summary    Summary        `json:"summary"`
+	Coverage   Coverage       `json:"coverage"`
 	Drift      []DriftFinding `json:"drift"`
 	Violations []Violation    `json:"violations"`
-	Meta       Meta       `json:"meta"`
+	Meta       Meta           `json:"meta"`
 }
 
 // Input records the parameters used for this run.
 type Input struct {
-	SpecFile  string `json:"spec_file"`
-	PlanFile  string `json:"plan_file"`
-	CodeRoot  string `json:"code_root"`
-	Profile   string `json:"profile"`
-	Strict    bool   `json:"strict"`
+	SpecFile string `json:"spec_file"`
+	PlanFile string `json:"plan_file"`
+	CodeRoot string `json:"code_root"`
+	Profile  string `json:"profile"`
+	Strict   bool   `json:"strict"`
 }
 
 // Summary holds the computed verdict and issue counts.
@@ -133,6 +133,16 @@ type Violation struct {
 type Meta struct {
 	Model       string  `json:"model"`
 	Temperature float64 `json:"temperature"`
+	// CoverageComplete is true when the model returned a usable coverage
+	// entry for every parsed spec and plan item. When false, the score and
+	// verdict are provisional: UnevaluatedCount entries were filled in by
+	// the tool (UNCLEAR, or NOT_IMPLEMENTED in strict mode).
+	CoverageComplete bool `json:"coverage_complete"`
+	UnevaluatedCount int  `json:"unevaluated_count,omitempty"`
+	// ResponseTruncated is true when a model response hit the output token
+	// limit and only its complete prefix was used. Raising --max-tokens
+	// usually reduces UnevaluatedCount.
+	ResponseTruncated bool `json:"response_truncated,omitempty"`
 }
 
 // PartialReport contains only the fields populated by the LLM.

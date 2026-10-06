@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dshills/realitycheck/internal/codeindex"
+	"github.com/dshills/realitycheck/internal/coverage"
 	"github.com/dshills/realitycheck/internal/drift"
 	"github.com/dshills/realitycheck/internal/llm"
 	"github.com/dshills/realitycheck/internal/plan"
@@ -284,6 +285,11 @@ func runCheck(ctx context.Context, f checkFlags) error {
 		Temperature: f.temperature,
 		Model:       f.model,
 		Debug:       f.debug,
+		Warnf: func(format string, args ...any) {
+			if f.verbose || f.debug {
+				fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+			}
+		},
 	}
 
 	// Step 7: Call LLM.
@@ -296,6 +302,24 @@ func runCheck(ctx context.Context, f checkFlags) error {
 		return &exitError{exitCodeAPIError, fmt.Sprintf("error: LLM: %v", err)}
 	}
 	logVerbose("LLM response received and validated")
+	if !partial.Meta.CoverageComplete {
+		// Always printed: an agent gating on the score must know it is provisional.
+		status := schema.StatusUnclear
+		if f.strict {
+			status = schema.StatusNotImplemented
+		}
+		total := len(specItems) + len(planItems)
+		fmt.Fprintf(os.Stderr,
+			"warning: model did not evaluate %d of %d spec/plan items; they are marked %s (notes: %q) and the score is provisional\n",
+			partial.Meta.UnevaluatedCount, total, status, coverage.NotEvaluatedNote)
+	}
+	if partial.Meta.ResponseTruncated {
+		if partial.Meta.CoverageComplete {
+			fmt.Fprintf(os.Stderr, "warning: model output hit the --max-tokens limit (%d); a follow-up call recovered the rest, raising the limit avoids it\n", f.maxTokens)
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: model output hit the --max-tokens limit (%d); raising it should evaluate more items\n", f.maxTokens)
+		}
+	}
 
 	// Step 8: Apply strict-mode severity escalation to drift findings.
 	if f.strict {

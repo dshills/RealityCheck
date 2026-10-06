@@ -207,3 +207,38 @@ func TestIntegration_InvalidOutput_ExitsFive(t *testing.T) {
 		t.Errorf("expected exit %d (bad output), got %d: %v", exitCodeBadOutput, code, err)
 	}
 }
+
+func TestIntegration_IncompleteCoverage_FilledAndProvisional(t *testing.T) {
+	// The model covers only SPEC-001 and PLAN-001 of the aligned fixture's
+	// 3+3 items. The mock has no second response, so the completion call
+	// fails; that must not fail the run.
+	partial := `{
+  "coverage": {
+    "spec": [{"id":"SPEC-001","status":"IMPLEMENTED","spec_reference":{"line_start":5,"line_end":5},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}],
+    "plan": [{"id":"PLAN-001","status":"IMPLEMENTED","plan_reference":{"line_start":5,"line_end":5},"evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}]}]
+  },
+  "drift": [], "violations": [], "meta": {"model":"mock","temperature":0.2}
+}`
+	injectMock(t, []string{partial})
+	f := baseFlags(t, "aligned")
+	f.failOn = "PARTIALLY_ALIGNED"
+
+	err := runCheck(context.Background(), f)
+	if code := exitCode(err); code != exitCodeFailOn {
+		t.Fatalf("expected exit %d (unevaluated items gate as PARTIALLY_ALIGNED), got %d: %v", exitCodeFailOn, code, err)
+	}
+
+	var report schema.Report
+	if parseErr := json.Unmarshal(readOutput(t, f.out), &report); parseErr != nil {
+		t.Fatalf("parse output JSON: %v", parseErr)
+	}
+	if report.Summary.Verdict != schema.VerdictPartiallyAligned {
+		t.Errorf("verdict: got %q, want PARTIALLY_ALIGNED", report.Summary.Verdict)
+	}
+	if len(report.Coverage.Spec) != 3 || len(report.Coverage.Plan) != 3 {
+		t.Errorf("coverage entries: got %d spec / %d plan, want 3 / 3", len(report.Coverage.Spec), len(report.Coverage.Plan))
+	}
+	if report.Meta.CoverageComplete || report.Meta.UnevaluatedCount != 4 {
+		t.Errorf("meta: got complete=%v unevaluated=%d, want false / 4", report.Meta.CoverageComplete, report.Meta.UnevaluatedCount)
+	}
+}

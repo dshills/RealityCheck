@@ -119,6 +119,28 @@ Score starts at 100 and decreases deterministically:
 
 Scoring is always computed locally — never by the LLM.
 
+### Coverage completeness
+
+Every parsed spec and plan item gets exactly one coverage entry in the report.
+Entries the model returns for IDs it was never given, duplicate entries, and
+entries with an invalid status are dropped. If the model skips items, one
+follow-up call asks for those items only. Anything still missing is filled in
+as `UNCLEAR` (`NOT_IMPLEMENTED` with `--strict`) with the note
+`"not evaluated by model"`.
+
+When that happens, `meta.coverage_complete` is `false`, `meta.unevaluated_count`
+says how many entries were filled, and a warning is printed to stderr. Treat the
+score as provisional in that case.
+
+The follow-up call shares the single extra-call budget with JSON repair: if the
+first response had to be repaired, missing items are filled without another call.
+
+The model is asked to emit drift and violations before coverage. If a response
+hits `--max-tokens`, the complete coverage entries are kept and the rest go
+through the follow-up and fill steps above; `meta.response_truncated` is set and
+stderr suggests raising `--max-tokens`. A response cut off before drift and
+violations are complete is never trusted and goes through JSON repair instead.
+
 ### Exit codes
 
 | Code | Meaning |
