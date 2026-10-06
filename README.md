@@ -256,6 +256,11 @@ Profiles modulate how the LLM interprets the spec and plan.
 - Missing evidence → absent
 - WARN drift → CRITICAL, INFO drift → WARN
 
+Without `--strict`, the model is told that the inventory holds names, not
+source, and to judge behavior from them: a `Set` method in a read-only service
+is reported as a violation, cited with `MEDIUM` confidence. Strict mode drops
+that rule, so behavior a name only implies counts as missing evidence.
+
 ---
 
 ## Architecture

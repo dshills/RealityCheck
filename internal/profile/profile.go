@@ -22,7 +22,7 @@ var builtins = map[string]Profile{
 		Description: "Default profile; evaluates all evidence sources equally.",
 		SystemPromptAddendum: "Evaluate all evidence sources equally. Apply standard drift and " +
 			"violation detection. When evidence is ambiguous, note the ambiguity explicitly in " +
-			"the 'notes' field rather than guessing.",
+			"the 'notes' field.",
 		StrictDriftSeverity: false,
 	},
 	"strict-api": {

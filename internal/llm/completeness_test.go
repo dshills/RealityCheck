@@ -9,6 +9,7 @@ import (
 
 	"github.com/dshills/realitycheck/internal/codeindex"
 	"github.com/dshills/realitycheck/internal/coverage"
+	"github.com/dshills/realitycheck/internal/profile"
 	"github.com/dshills/realitycheck/internal/schema"
 	"github.com/dshills/realitycheck/internal/spec"
 )
@@ -103,6 +104,25 @@ func TestBuildUserPrompt_IncludesItemIDs(t *testing.T) {
 	}
 	if !strings.Contains(buildSystemPrompt(loadGeneralProfile(t), false), "exactly one entry for every SPEC ID") {
 		t.Error("system prompt missing coverage completeness rule")
+	}
+}
+
+func TestSystemPrompts_NameEvidenceOnlyOutsideStrict(t *testing.T) {
+	prof := loadGeneralProfile(t)
+	for name, build := range map[string]func(profile.Profile, bool) string{
+		"analysis":   buildSystemPrompt,
+		"completion": buildCompletionSystemPrompt,
+	} {
+		if !strings.Contains(build(prof, false), nameEvidenceRule) {
+			t.Errorf("%s prompt: non-strict mode should allow judging behavior from symbol names", name)
+		}
+		strict := build(prof, true)
+		if strings.Contains(strict, nameEvidenceRule) {
+			t.Errorf("%s prompt: strict mode forbids inference but includes the name-evidence rule", name)
+		}
+		if !strings.Contains(strict, "Do not infer intent") {
+			t.Errorf("%s prompt: strict rule missing", name)
+		}
 	}
 }
 

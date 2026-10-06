@@ -729,6 +729,20 @@ const coverageCompletenessRule = "coverage.spec MUST contain exactly one entry f
 	"Use the IDs exactly as given. Do not skip items and do not invent IDs. " +
 	"If an item is not a verifiable requirement or step, mark it UNCLEAR and say so in notes.\n\n"
 
+// nameEvidenceRule tells the model, outside strict mode, to judge behavior
+// from symbol names. The inventory never carries source code, and without
+// this rule cautious models mark every behavioral item UNCLEAR and report no
+// drift or violations at all.
+const nameEvidenceRule = "The CODE INVENTORY lists file paths, symbol names, test names, " +
+	"and dependency manifests, never source code, by design. Judge behavior from names and " +
+	"conventions: a symbol whose name clearly denotes a behavior (for example Set, Delete, " +
+	"Write, Save, Send) is evidence of that behavior. Cite evidence that rests on what a " +
+	"name implies with MEDIUM confidence, and keep HIGH for symbols whose existence is " +
+	"itself the evidence. Report any drift or violation it implies. Set severity by what " +
+	"the behavior would mean if present; express doubt through evidence confidence, not " +
+	"by lowering severity. Mark an item UNCLEAR only when the inventory gives no signal " +
+	"about it.\n\n"
+
 // writePromptRules writes the rules shared by every system prompt.
 func writePromptRules(sb *strings.Builder, prof profile.Profile, strict bool) {
 	sb.WriteString("You are RealityCheck, an intent enforcement analyzer.\n\n")
@@ -744,6 +758,8 @@ func writePromptRules(sb *strings.Builder, prof profile.Profile, strict bool) {
 		sb.WriteString("Strict mode is active. Do not infer intent. " +
 			"Treat all unclear coverage as NOT_IMPLEMENTED. " +
 			"Treat all unverifiable evidence as absent.\n\n")
+	} else {
+		sb.WriteString(nameEvidenceRule)
 	}
 
 	if prof.SystemPromptAddendum != "" {
