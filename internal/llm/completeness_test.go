@@ -96,7 +96,7 @@ func runAnalyze(t *testing.T, specItems, planItems []spec.Item, strict bool, war
 }
 
 func TestBuildUserPrompt_IncludesItemIDs(t *testing.T) {
-	got := buildUserPrompt(items("SPEC", 2), items("PLAN", 1), codeindex.Index{})
+	got := buildUserPrompt(items("SPEC", 2), items("PLAN", 1), codeindex.Index{}.Summary())
 	for _, want := range []string{"SPEC-001 [1-1]: SPEC text 1", "SPEC-002 [2-2]", "PLAN-001 [1-1]: PLAN text 1"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("user prompt missing %q", want)
@@ -493,7 +493,7 @@ func mixedItems() []spec.Item {
 }
 
 func TestBuildUserPrompt_ContextAndSections(t *testing.T) {
-	got := buildUserPrompt(mixedItems(), nil, codeindex.Index{})
+	got := buildUserPrompt(mixedItems(), nil, codeindex.Index{}.Summary())
 	for _, want := range []string{
 		"## Purpose\n  · [1-1]: Intro prose.\n  SPEC-001 [3-3]: Must do A.\n",
 		"## Model\n  · [5-7]: { example }\n  SPEC-002 [9-9]: Must do B.\n",

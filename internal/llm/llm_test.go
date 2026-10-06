@@ -316,3 +316,32 @@ func TestValidateEvidence_Symbols(t *testing.T) {
 		}
 	}
 }
+
+func TestFinalizeReport_InventoryMeta(t *testing.T) {
+	full := &schema.PartialReport{}
+	finalizeReport(full, nil, nil, codeindex.Rendered{}, Options{Model: "m"})
+	if full.Meta.InventoryTruncated || full.Meta.InventorySignaturesOmitted || full.Meta.InventorySymbolsOmitted != 0 {
+		t.Errorf("full inventory should set no inventory meta: %+v", full.Meta)
+	}
+
+	cut := &schema.PartialReport{}
+	finalizeReport(cut, nil, nil, codeindex.Rendered{SignaturesOmitted: true, SymbolsOmitted: 7, TestsOmitted: 3, FilesOmitted: 2}, Options{Model: "m"})
+	if !cut.Meta.InventoryTruncated || !cut.Meta.InventorySignaturesOmitted ||
+		cut.Meta.InventorySymbolsOmitted != 7 || cut.Meta.InventoryTestsOmitted != 3 || cut.Meta.InventoryFilesOmitted != 2 {
+		t.Errorf("truncated inventory meta = %+v", cut.Meta)
+	}
+
+	// Manifest lines have no meta count but still mark truncation.
+	man := &schema.PartialReport{}
+	finalizeReport(man, nil, nil, codeindex.Rendered{ManifestLinesOmitted: 4}, Options{Model: "m"})
+	if !man.Meta.InventoryTruncated {
+		t.Errorf("manifest-only truncation meta = %+v", man.Meta)
+	}
+
+	// Signatures alone dropping is not truncation.
+	sigs := &schema.PartialReport{}
+	finalizeReport(sigs, nil, nil, codeindex.Rendered{SignaturesOmitted: true}, Options{Model: "m"})
+	if sigs.Meta.InventoryTruncated || !sigs.Meta.InventorySignaturesOmitted {
+		t.Errorf("signatures-only meta = %+v", sigs.Meta)
+	}
+}

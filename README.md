@@ -284,8 +284,7 @@ parsed with `go/parser`, and each function, method, and type is listed with its
 declaration signature (`func (s *Store) Set(key, value string)`,
 `type Store struct`): no bodies, struct fields, interface methods, or comments.
 A Go file that does not parse, and the other languages, use regex extraction
-and list names only. If signatures would push the inventory past its 40 KB
-limit, symbols are listed by name only, with a notice, before any are dropped.
+and list names only.
 
 ### Code inventory
 
@@ -304,6 +303,23 @@ directory is walked. These are always left out:
 `--ignore` adds glob patterns. A pattern without `/` matches any directory or
 file name (`generated`, `*.pb.go`); a pattern with `/` matches a path from the
 code root and everything under it (`internal/gen`, `docs/*.md`).
+
+The inventory is encoded compactly. Symbols and tests are grouped by file (Go
+declarations one per line under the file, other names comma-separated), a
+directory with more than 8 Markdown or unclassified files lists them as counts
+by extension (`docs/ (14 .md, 2 .txt)`), and `go.mod` is sent without its
+`// indirect` requirements. On this repository that is about 24 KB.
+
+The inventory is capped at 80 KB. Past that, Go symbols are listed by name only
+(`meta.inventory_signatures_omitted`). If names still do not fit, each section
+keeps as many whole entries as fit its budget: a quarter of the cap each for
+the file tree and the tests, an eighth for manifests, a sixteenth for the
+config list, and the rest for symbols. Then `meta.inventory_truncated` is set,
+and `meta.inventory_symbols_omitted`, `meta.inventory_tests_omitted`, and
+`meta.inventory_files_omitted` say how much was left out. Items implemented
+only by omitted code may be reported `NOT_IMPLEMENTED` or `UNCLEAR`; use
+`--ignore` to narrow the inventory. Each fallback prints a warning to stderr
+and a notice in the inventory itself.
 
 ---
 

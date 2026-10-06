@@ -6,6 +6,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.25.0
 	github.com/openai/openai-go v1.12.0
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/mod v0.38.0
 	google.golang.org/genai v1.72.0
 )
 

@@ -160,6 +160,17 @@ Two conclusions drive the ordering below:
 
 ### 10. Compact inventory encoding
 **Tokens**
+**Status: done.** On this repo the inventory went from 36.9 KB to 24.2 KB with
+full Go signatures (symbols 21.1 → 15.2 KB, tests 12.5 → 7.0 KB, go.mod
+1.8 → 0.3 KB). Non-code files collapse only in directories with more than 8 of
+them, so root docs such as README.md stay citable. Lockfiles were already
+excluded by item 5. The cap is now 80 KB and always holds: signatures go first; then the file
+tree and tests get a quarter of the cap each, manifests an eighth, the config
+list a sixteenth, and symbols the rest, each keeping a counted prefix.
+Fallbacks are reported in `meta.inventory_signatures_omitted`,
+`meta.inventory_truncated`, and `meta.inventory_{symbols,tests,files}_omitted`. Still open: very large repos spend most of the
+budget on the file tree, which lists code files that the symbol and test
+groups name again.
 - Group symbols and tests by file: `path: a, b, c` instead of one `path: sym`
   line per symbol. Measured on this repo: symbols 7.0 KB → 2.7 KB, tests
   5.9 KB → 3.2 KB.
@@ -202,9 +213,9 @@ Two conclusions drive the ordering below:
 **Status: signatures done.** Go functions, methods, and types are listed with
 their `go/parser` declaration signatures; on a names-only inventory gpt-6.1-sol
 could not confirm receivers and left plan steps PARTIAL. Imports, doc comments,
-and `--include-source=cited` are still open. Signatures add about 9.7 KB on
-this repo (36.9 KB of the 40 KB cap); item 10's grouping by file would win most
-of that back, and the inventory falls back to names before dropping symbols.
+and `--include-source=cited` are still open. With item 10's grouping, the
+inventory with signatures is 24.2 KB on this repo (80 KB cap), and it falls
+back to names before dropping symbols.
 - Go: use `go/parser` for signatures, receiver types, exported doc comments, and
   the import list per file. Cost is small and the privacy promise ("no raw code
   to the LLM") still holds.

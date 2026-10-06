@@ -120,29 +120,6 @@ func TestSummary_NoTruncation(t *testing.T) {
 	}
 }
 
-func TestSummary_Truncation(t *testing.T) {
-	// Build a synthetic large index that exceeds 40k characters.
-	var symbols []SymbolEntry
-	for i := 0; i < 5000; i++ {
-		symbols = append(symbols, SymbolEntry{
-			Path:   "internal/big/big.go",
-			Symbol: "VeryLongFunctionNameThatTakesUpSpace",
-		})
-	}
-	large := Index{
-		Files:   []FileEntry{{Path: "internal/big/big.go", Language: "Go"}},
-		Symbols: symbols,
-	}
-	summary := large.Summary()
-	if !strings.Contains(summary, "[TRUNCATED:") {
-		t.Error("large index should trigger truncation notice")
-	}
-	// Allow a small margin for the truncation notice and section header.
-	if len(summary) > maxSummaryBytes+100 {
-		t.Errorf("truncated summary is too long: %d bytes (limit %d)", len(summary), maxSummaryBytes)
-	}
-}
-
 func TestExtractGoSymbols_AllTypeDeclarations(t *testing.T) {
 	src := "package x\n\ntype Verdict string\ntype Alias = int\ntype Set[T comparable] map[T]struct{}\ntype S struct{}\ntype I interface{}\ntype (\n\tgrouped int\n)\n"
 	got := map[string]bool{}

@@ -147,6 +147,18 @@ type Meta struct {
 	// limit and only its complete prefix was used. Raising --max-tokens
 	// usually reduces UnevaluatedCount.
 	ResponseTruncated bool `json:"response_truncated,omitempty"`
+	// InventorySignaturesOmitted is true when the code inventory listed Go
+	// symbols by name only, because their signatures did not fit.
+	InventorySignaturesOmitted bool `json:"inventory_signatures_omitted,omitempty"`
+	// InventoryTruncated is true when the code inventory exceeded its size
+	// limit and part of it was left out of the prompt: the counted symbols,
+	// tests, and files (file tree entries and config files), or manifest
+	// lines. Items implemented only by omitted code may be reported as
+	// NOT_IMPLEMENTED or UNCLEAR; narrow the inventory with --ignore.
+	InventoryTruncated      bool `json:"inventory_truncated,omitempty"`
+	InventorySymbolsOmitted int  `json:"inventory_symbols_omitted,omitempty"`
+	InventoryTestsOmitted   int  `json:"inventory_tests_omitted,omitempty"`
+	InventoryFilesOmitted   int  `json:"inventory_files_omitted,omitempty"`
 }
 
 // PartialReport contains only the fields populated by the LLM.

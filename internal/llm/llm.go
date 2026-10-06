@@ -154,7 +154,8 @@ func Analyze(
 	}
 
 	sysPrompt := buildSystemPrompt(prof, opts.Strict)
-	userPrompt := buildUserPrompt(specItems, planItems, index)
+	inventory := index.Render()
+	userPrompt := buildUserPrompt(specItems, planItems, inventory.Text)
 
 	// The prompt shows every item, with informational ones as context.
 	// Coverage is owed only for items that carry an ID.
@@ -197,7 +198,7 @@ func Analyze(
 			return nil, ErrInvalidModelOutput
 		}
 		report2.Meta.ResponseTruncated = resp2.Truncated || hasTruncation(validationErrs2)
-		finalizeReport(report2, specItems, planItems, opts)
+		finalizeReport(report2, specItems, planItems, inventory, opts)
 		return report2, nil
 	}
 
@@ -208,10 +209,10 @@ func Analyze(
 
 	missSpec, missPlan := coverage.Missing(report.Coverage, specItems, planItems)
 	if len(missSpec)+len(missPlan) > 0 {
-		completeCoverage(ctx, provider, prof, report, missSpec, missPlan, specItems, planItems, index, opts)
+		completeCoverage(ctx, provider, prof, report, missSpec, missPlan, specItems, planItems, index, inventory.Text, opts)
 	}
 
-	finalizeReport(report, specItems, planItems, opts)
+	finalizeReport(report, specItems, planItems, inventory, opts)
 	return report, nil
 }
 
@@ -228,10 +229,11 @@ func completeCoverage(
 	specItems []spec.Item,
 	planItems []plan.Item,
 	index codeindex.Index,
+	inventory string,
 	opts Options,
 ) {
 	sysPrompt := buildCompletionSystemPrompt(prof, opts.Strict)
-	userPrompt := buildCompletionPrompt(missSpec, missPlan, index)
+	userPrompt := buildCompletionPrompt(missSpec, missPlan, inventory)
 	if opts.Debug {
 		fmt.Fprintf(os.Stderr, "=== DEBUG: completion system prompt ===\n%s\n", sysPrompt)
 		fmt.Fprintf(os.Stderr, "=== DEBUG: completion user prompt ===\n%s\n", userPrompt)
@@ -268,10 +270,17 @@ func completeCoverage(
 // finalizeReport fills in everything the tool knows better than the model:
 // it reconciles coverage with the parsed items, fills placeholders for
 // anything still missing, derives every spec/plan reference from item IDs,
-// and sets Meta. The model is not asked for references or meta at all.
-func finalizeReport(report *schema.PartialReport, specItems []spec.Item, planItems []plan.Item, opts Options) {
+// and sets Meta, including what the inventory left out to fit. The model is
+// not asked for references or meta at all.
+func finalizeReport(report *schema.PartialReport, specItems []spec.Item, planItems []plan.Item,
+	inventory codeindex.Rendered, opts Options) {
 	report.Meta.Model = opts.Model
 	report.Meta.Temperature = opts.Temperature
+	report.Meta.InventorySignaturesOmitted = inventory.SignaturesOmitted
+	report.Meta.InventoryTruncated = inventory.Truncated()
+	report.Meta.InventorySymbolsOmitted = inventory.SymbolsOmitted
+	report.Meta.InventoryTestsOmitted = inventory.TestsOmitted
+	report.Meta.InventoryFilesOmitted = inventory.FilesOmitted
 	logDropped(coverage.Normalize(&report.Coverage, specItems, planItems), opts)
 	filled := coverage.FillMissing(&report.Coverage, specItems, planItems, opts.Strict)
 	report.Meta.CoverageComplete = filled == 0
@@ -868,8 +877,9 @@ var outputSchema = `Output schema (JSON only). Emit the keys in this order: drif
 }
 `
 
-// buildUserPrompt assembles the LLM user prompt.
-func buildUserPrompt(specItems []spec.Item, planItems []plan.Item, index codeindex.Index) string {
+// buildUserPrompt assembles the LLM user prompt around the rendered code
+// inventory.
+func buildUserPrompt(specItems []spec.Item, planItems []plan.Item, inventory string) string {
 	var sb strings.Builder
 
 	sb.WriteString(documentLegend)
@@ -880,7 +890,7 @@ func buildUserPrompt(specItems []spec.Item, planItems []plan.Item, index codeind
 	writeDocument(&sb, planItems)
 
 	sb.WriteString("\nCODE INVENTORY:\n")
-	sb.WriteString(index.Summary())
+	sb.WriteString(inventory)
 
 	sb.WriteString("\nProduce the JSON report now.")
 
@@ -920,7 +930,7 @@ func writeItems(sb *strings.Builder, items []spec.Item) {
 
 // buildCompletionPrompt asks for coverage of the given items only. The full
 // spec and plan are not re-sent; the missing items carry their own text.
-func buildCompletionPrompt(missSpec, missPlan []spec.Item, index codeindex.Index) string {
+func buildCompletionPrompt(missSpec, missPlan []spec.Item, inventory string) string {
 	var sb strings.Builder
 	sb.WriteString("A previous analysis pass did not assess the items below. " +
 		"Assess only these items and return exactly one coverage entry for each ID.\n\n")
@@ -935,7 +945,7 @@ func buildCompletionPrompt(missSpec, missPlan []spec.Item, index codeindex.Index
 		sb.WriteString("\n")
 	}
 	sb.WriteString("CODE INVENTORY:\n")
-	sb.WriteString(index.Summary())
+	sb.WriteString(inventory)
 	sb.WriteString("\nProduce the JSON coverage now.")
 	return sb.String()
 }

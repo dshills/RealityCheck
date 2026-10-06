@@ -53,9 +53,6 @@ type Index struct {
 	ConfigFiles         []string // relative paths only; content not included
 }
 
-// maxSummaryBytes is the maximum byte length of Summary() output before truncation.
-const maxSummaryBytes = 40_000
-
 // maxFileSize is the maximum file size to read for symbol extraction.
 const maxFileSize = 1 << 20 // 1 MB
 
@@ -529,125 +526,6 @@ func isBinary(path string) bool {
 	buf := make([]byte, 8000)
 	n, _ := io.ReadFull(f, buf)
 	return bytes.IndexByte(buf[:n], 0) >= 0
-}
-
-// writeNonSymbolSections appends all non-symbol sections (file tree, tests,
-// manifests, config) to sb. Called by both Summary and truncatedSummary.
-func writeNonSymbolSections(sb *strings.Builder, idx Index) {
-	sb.WriteString("=== File Tree ===\n")
-	for _, f := range idx.Files {
-		fmt.Fprintf(sb, "  %s (%s)\n", f.Path, f.Language)
-	}
-	if len(idx.Tests) > 0 {
-		sb.WriteString("\n=== Tests ===\n")
-		for _, t := range idx.Tests {
-			fmt.Fprintf(sb, "  %s: %s\n", t.Path, t.Function)
-		}
-	}
-	if len(idx.DependencyManifests) > 0 {
-		sb.WriteString("\n=== Dependency Manifests ===\n")
-		for _, m := range idx.DependencyManifests {
-			fmt.Fprintf(sb, "--- %s ---\n%s\n", m.Path, m.Content)
-		}
-	}
-	if len(idx.ConfigFiles) > 0 {
-		sb.WriteString("\n=== Config Files ===\n")
-		for _, c := range idx.ConfigFiles {
-			fmt.Fprintf(sb, "  %s\n", c)
-		}
-	}
-}
-
-// Summary produces a human-readable text block for LLM consumption. Go
-// symbols are listed by signature. If that exceeds maxSummaryBytes, symbols
-// are listed by name only, with a notice; if names still do not fit, the
-// symbol list is truncated and a notice is appended. A warning is emitted to
-// stderr whenever either fallback applies.
-func (idx Index) Summary() string {
-	var nonSym strings.Builder
-	writeNonSymbolSections(&nonSym, idx)
-
-	var sb strings.Builder
-	sb.WriteString(nonSym.String())
-	sb.WriteString(symbolSectionHeader)
-	for _, s := range idx.Symbols {
-		sig := s.Signature
-		if sig == "" {
-			sig = s.Symbol
-		}
-		fmt.Fprintf(&sb, "  %s: %s\n", s.Path, sig)
-	}
-	if sb.Len() <= maxSummaryBytes {
-		return sb.String()
-	}
-	withSigs := sb.Len()
-
-	sb.Reset()
-	sb.WriteString(nonSym.String())
-	sb.WriteString(symbolSectionHeader)
-	for _, s := range idx.Symbols {
-		fmt.Fprintf(&sb, "  %s: %s\n", s.Path, s.Symbol)
-	}
-	sb.WriteString(signaturesOmittedNotice)
-	if sb.Len() <= maxSummaryBytes {
-		fmt.Fprintf(os.Stderr,
-			"codeindex: WARNING: signatures omitted to fit context limit (%d chars with signatures > %d limit)\n",
-			withSigs, maxSummaryBytes)
-		return sb.String()
-	}
-
-	return truncatedSummary(idx, sb.Len())
-}
-
-// signaturesOmittedNotice tells the model why Go symbols appear without
-// signatures when the signature listing did not fit.
-const signaturesOmittedNotice = "[SIGNATURES OMITTED: symbols listed by name only to fit context limit]\n"
-
-// symbolSectionHeader is included in the budget so the final output stays
-// within maxSummaryBytes.
-const symbolSectionHeader = "\n=== Symbols ===\n"
-
-// truncatedSummary rebuilds Summary() with the symbol list pruned to fit within
-// maxSummaryBytes. It emits a warning to stderr.
-// File Tree, Tests, Manifests, and Config sections are rendered only once and
-// reused in the final output.
-func truncatedSummary(idx Index, fullLen int) string {
-	// Render non-symbol sections once; reuse the result.
-	var nonSym strings.Builder
-	writeNonSymbolSections(&nonSym, idx)
-	nonSymStr := nonSym.String()
-
-	// Reserve space for the section header, truncation notice, and a margin.
-	const truncationNotice = "[TRUNCATED: %d symbols omitted to fit context limit]\n"
-	reservedForOverhead := len(symbolSectionHeader) + 80 // 80 bytes covers the formatted notice
-	budget := maxSummaryBytes - len(nonSymStr) - reservedForOverhead
-
-	// Determine how many symbols to keep within budget.
-	kept := 0
-	used := 0
-	for _, s := range idx.Symbols {
-		line := fmt.Sprintf("  %s: %s\n", s.Path, s.Symbol)
-		if used+len(line) > budget {
-			break
-		}
-		used += len(line)
-		kept++
-	}
-
-	omitted := len(idx.Symbols) - kept
-	fmt.Fprintf(os.Stderr,
-		"codeindex: WARNING: summary truncated: %d symbols omitted (total %d chars > %d limit)\n",
-		omitted, fullLen, maxSummaryBytes)
-
-	var sb strings.Builder
-	sb.WriteString(nonSymStr)
-	sb.WriteString(symbolSectionHeader)
-	for _, s := range idx.Symbols[:kept] {
-		fmt.Fprintf(&sb, "  %s: %s\n", s.Path, s.Symbol)
-	}
-	fmt.Fprintf(&sb, truncationNotice, omitted)
-
-	return sb.String()
 }
 
 // ── Go ────────────────────────────────────────────────────────────────────────
