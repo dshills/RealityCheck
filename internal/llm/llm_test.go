@@ -248,13 +248,18 @@ func TestValidateEvidence_Symbols(t *testing.T) {
 		Files: []codeindex.FileEntry{
 			{Path: "store.go", Language: "Go"},
 			{Path: "store_test.go", Language: "Go"},
+			{Path: "store.test.ts", Language: "TypeScript"},
 			{Path: "README.md", Language: "Markdown"},
 		},
 		Symbols: []codeindex.SymbolEntry{
 			{Path: "store.go", Symbol: "Store"},
 			{Path: "store.go", Symbol: "Get"},
 		},
-		Tests:       []codeindex.TestEntry{{Path: "store_test.go", Function: "TestGet"}},
+		Tests: []codeindex.TestEntry{
+			{Path: "store_test.go", Function: "TestGet"},
+			{Path: "store.test.ts", Function: "handles empty input"},
+			{Path: "store.test.ts", Function: "handles"},
+		},
 		ConfigFiles: []string{"config.yaml"},
 	}
 	tests := []struct {
@@ -266,8 +271,28 @@ func TestValidateEvidence_Symbols(t *testing.T) {
 		{"store.go", "(*Store).Get", false},
 		{"store.go", "pkg.Store", false},
 		{"store.go", "Get()", false},
+		// Citations copied from the signatures the inventory shows.
+		{"store.go", "Get(key string)", false},
+		{"store.go", "func (s *Store) Get(key string) (string, bool)", false},
+		{"store.go", "(*Store).Get(key string)", false},
+		{"store.go", "Store.Get(ctx context.Context, key string)", false},
+		{"store.go", "type Store struct", false},
+		{"store.go", "Store[T comparable]", false},
+		{"store.go", "func (s *Store) Delete(key string)", true},
+		{"store.go", "(*Store)", false}, // a receiver cited alone names its type
+		{"store.go", "(s *Store)", false},
+		{"store.go", "(*Missing)", true},
+		// Generic receivers: the member is checked, not the type.
+		{"store.go", "Store[T].Get(key T)", false},
+		{"store.go", "(*Store[K, V]).Get", false},
+		{"store.go", "Store[T].Delete", true},
+		{"store.go", "Get(keys []string, m map[string]int)", false},
 		{"store.go", "", false},
 		{"store_test.go", "TestGet", false},
+		{"store.test.ts", "handles empty input", false}, // free-text test name
+		{"store.test.ts", "handles empty input()", false},
+		{"store.test.ts", "handles empty output", true}, // must not shrink to "handles"
+		{"store_test.go", "store.TestGet", false},
 		{"README.md", "Anything", false},   // no extractor: cannot check
 		{"config.yaml", "anything", false}, // config: cannot check
 		{"store.go", "Delete", true},       // not indexed for this file

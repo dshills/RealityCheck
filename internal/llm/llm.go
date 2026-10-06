@@ -495,7 +495,8 @@ func validateCompletion(raw string, index codeindex.Index) (*schema.Coverage, []
 // evidenceIndex is what evidence citations are checked against.
 type evidenceIndex struct {
 	paths   map[string]bool            // every indexed file, manifest, and config
-	symbols map[string]map[string]bool // path -> symbols and test names
+	symbols map[string]map[string]bool // path -> declared symbol names
+	tests   map[string]map[string]bool // path -> test names, which may be free text
 }
 
 // newEvidenceIndex builds the lookup sets from the code index.
@@ -503,6 +504,7 @@ func newEvidenceIndex(index codeindex.Index) evidenceIndex {
 	ei := evidenceIndex{
 		paths:   make(map[string]bool, len(index.Files)),
 		symbols: make(map[string]map[string]bool),
+		tests:   make(map[string]map[string]bool),
 	}
 	for _, f := range index.Files {
 		ei.paths[f.Path] = true
@@ -513,38 +515,87 @@ func newEvidenceIndex(index codeindex.Index) evidenceIndex {
 	for _, c := range index.ConfigFiles {
 		ei.paths[c] = true
 	}
-	add := func(path, name string) {
-		if ei.symbols[path] == nil {
-			ei.symbols[path] = make(map[string]bool)
+	add := func(set map[string]map[string]bool, path, name string) {
+		if set[path] == nil {
+			set[path] = make(map[string]bool)
 		}
-		ei.symbols[path][name] = true
+		set[path][name] = true
 	}
 	for _, sym := range index.Symbols {
-		add(sym.Path, sym.Symbol)
+		add(ei.symbols, sym.Path, sym.Symbol)
 	}
 	for _, t := range index.Tests {
-		add(t.Path, t.Function)
+		add(ei.tests, t.Path, t.Function)
 	}
 	return ei
 }
 
-// hasSymbol reports whether symbol is indexed for path. Models qualify
-// names in several ways ("Store.Get", "(*Store).Get", "llm.Analyze",
-// "Analyze()"), so the raw name and its last dot-separated segment are both
-// tried, with call parentheses, pointer stars, and receiver parentheses
-// removed.
+// hasSymbol reports whether symbol is indexed for path. A citation matches
+// as written or without call parentheses. Declared symbols also match the
+// bare name citedName extracts; test names only when the citation has no
+// spaces, since free-text names ("handles empty input") must not shrink to
+// a different test ("handles").
 func (ei evidenceIndex) hasSymbol(path, symbol string) bool {
-	known := ei.symbols[path]
-	raw := strings.TrimSuffix(strings.TrimSpace(symbol), "()")
-	if known[raw] {
+	raw := strings.TrimSpace(symbol)
+	exact := func(known map[string]bool) bool {
+		return known[raw] || known[strings.TrimSuffix(raw, "()")]
+	}
+	syms, tests := ei.symbols[path], ei.tests[path]
+	if exact(syms) || exact(tests) || syms[citedName(raw)] {
 		return true
 	}
-	last := raw
-	if i := strings.LastIndex(raw, "."); i >= 0 {
-		last = raw[i+1:]
+	return !strings.Contains(raw, " ") && tests[citedName(raw)]
+}
+
+// citedName reduces a cited symbol to the bare name the index stores.
+// Models qualify names ("Store.Get", "llm.Analyze", "Store[T].Get"), cite
+// receivers ("(*Store).Get"), add call parentheses ("Analyze()"), or copy
+// the declaration signatures the inventory shows ("func (s *Store) Set(key,
+// value string)", "type Store struct", "Set[T comparable]").
+func citedName(symbol string) string {
+	s := strings.TrimSpace(symbol)
+	s = strings.TrimPrefix(s, "func ")
+	s = strings.TrimPrefix(s, "type ")
+	// Skip a leading receiver: "(s *Store) Set(...)" or "(*Store).Get". A
+	// receiver cited alone ("(*Store)", "(s *Store)") names its type.
+	if strings.HasPrefix(s, "(") {
+		if i := strings.Index(s, ")"); i >= 0 {
+			if rest := strings.TrimLeft(s[i+1:], " ."); rest != "" {
+				s = rest
+			} else {
+				recv := strings.TrimSpace(s[1:i])
+				s = recv[strings.LastIndex(recv, " ")+1:]
+			}
+		}
 	}
-	last = strings.Trim(last, "*()")
-	return known[last]
+	// Drop type parameters and arguments, which may hold spaces and dots,
+	// then cut parameters or a type definition. Parameter types may also
+	// contain dots ("ctx context.Context"), so both come before the split.
+	s = withoutBrackets(s)
+	if i := strings.IndexAny(s, "( "); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndex(s, "."); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.Trim(s, "*")
+}
+
+// withoutBrackets removes every balanced [...] group from s.
+func withoutBrackets(s string) string {
+	var sb strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch {
+		case r == '[':
+			depth++
+		case r == ']' && depth > 0:
+			depth--
+		case depth == 0:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
 }
 
 var (
@@ -733,15 +784,15 @@ const coverageCompletenessRule = "coverage.spec MUST contain exactly one entry f
 // from symbol names. The inventory never carries source code, and without
 // this rule cautious models mark every behavioral item UNCLEAR and report no
 // drift or violations at all.
-const nameEvidenceRule = "The CODE INVENTORY lists file paths, symbol names, test names, " +
-	"and dependency manifests, never source code, by design. Judge behavior from names and " +
-	"conventions: a symbol whose name clearly denotes a behavior (for example Set, Delete, " +
-	"Write, Save, Send) is evidence of that behavior. Cite evidence that rests on what a " +
-	"name implies with MEDIUM confidence, and keep HIGH for symbols whose existence is " +
-	"itself the evidence. Report any drift or violation it implies. Set severity by what " +
-	"the behavior would mean if present; express doubt through evidence confidence, not " +
-	"by lowering severity. Mark an item UNCLEAR only when the inventory gives no signal " +
-	"about it.\n\n"
+const nameEvidenceRule = "The CODE INVENTORY lists file paths, symbol names (with " +
+	"declaration signatures for Go), test names, and dependency manifests, never source " +
+	"code, by design. Judge behavior from names, signatures, and conventions: a symbol " +
+	"whose name clearly denotes a behavior (for example Set, Delete, Write, Save, Send) is " +
+	"evidence of that behavior. Cite evidence that rests on what a name implies with MEDIUM " +
+	"confidence, and keep HIGH for symbols whose existence is itself the evidence. Report " +
+	"any drift or violation it implies. Set severity by what the behavior would mean if " +
+	"present; express doubt through evidence confidence, not by lowering severity. Mark an " +
+	"item UNCLEAR only when the inventory gives no signal about it.\n\n"
 
 // writePromptRules writes the rules shared by every system prompt.
 func writePromptRules(sb *strings.Builder, prof profile.Profile, strict bool) {

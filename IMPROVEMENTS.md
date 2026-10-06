@@ -199,6 +199,12 @@ Two conclusions drive the ordering below:
 
 ### 13. Richer evidence without sending source
 **Accuracy**
+**Status: signatures done.** Go functions, methods, and types are listed with
+their `go/parser` declaration signatures; on a names-only inventory gpt-6.1-sol
+could not confirm receivers and left plan steps PARTIAL. Imports, doc comments,
+and `--include-source=cited` are still open. Signatures add about 9.7 KB on
+this repo (36.9 KB of the 40 KB cap); item 10's grouping by file would win most
+of that back, and the inventory falls back to names before dropping symbols.
 - Go: use `go/parser` for signatures, receiver types, exported doc comments, and
   the import list per file. Cost is small and the privacy promise ("no raw code
   to the LLM") still holds.

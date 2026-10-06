@@ -1,6 +1,7 @@
 // Package codeindex builds a lightweight code inventory from a directory tree.
 // It extracts file lists, symbols, test function names, dependency manifests,
-// and config file names without performing full AST parsing.
+// and config file names. Go declarations are parsed for their signatures;
+// other languages use regex extraction.
 package codeindex
 
 import (
@@ -26,8 +27,9 @@ type FileEntry struct {
 
 // SymbolEntry is a named symbol (function, type, class, etc.) extracted from a file.
 type SymbolEntry struct {
-	Path   string // relative file path
-	Symbol string // extracted symbol name
+	Path      string // relative file path
+	Symbol    string // extracted symbol name
+	Signature string // declaration without body, e.g. "func (s *Store) Set(key, value string)"; Go only, else empty
 }
 
 // TestEntry is a named test function extracted from a test file.
@@ -502,6 +504,13 @@ func indexFile(idx *Index, root, rel string) {
 		}
 		return
 	}
+	if ext == ".go" {
+		if decls, ok := goDeclarations(relPath, content); ok {
+			idx.Symbols = append(idx.Symbols, decls...)
+			return
+		}
+		// Unparseable Go falls through to the regex extractor: names only.
+	}
 	if extractor, ok := symbolExtractors[ext]; ok {
 		for _, sym := range extractor(content) {
 			idx.Symbols = append(idx.Symbols, SymbolEntry{Path: relPath, Symbol: sym})
@@ -549,26 +558,50 @@ func writeNonSymbolSections(sb *strings.Builder, idx Index) {
 	}
 }
 
-// Summary produces a human-readable text block for LLM consumption.
-// If the output exceeds maxSummaryBytes, the symbol list is truncated and a
-// notice is appended. A warning is emitted to stderr when truncation occurs.
+// Summary produces a human-readable text block for LLM consumption. Go
+// symbols are listed by signature. If that exceeds maxSummaryBytes, symbols
+// are listed by name only, with a notice; if names still do not fit, the
+// symbol list is truncated and a notice is appended. A warning is emitted to
+// stderr whenever either fallback applies.
 func (idx Index) Summary() string {
+	var nonSym strings.Builder
+	writeNonSymbolSections(&nonSym, idx)
+
 	var sb strings.Builder
+	sb.WriteString(nonSym.String())
+	sb.WriteString(symbolSectionHeader)
+	for _, s := range idx.Symbols {
+		sig := s.Signature
+		if sig == "" {
+			sig = s.Symbol
+		}
+		fmt.Fprintf(&sb, "  %s: %s\n", s.Path, sig)
+	}
+	if sb.Len() <= maxSummaryBytes {
+		return sb.String()
+	}
+	withSigs := sb.Len()
 
-	writeNonSymbolSections(&sb, idx)
-
-	sb.WriteString("\n=== Symbols ===\n")
+	sb.Reset()
+	sb.WriteString(nonSym.String())
+	sb.WriteString(symbolSectionHeader)
 	for _, s := range idx.Symbols {
 		fmt.Fprintf(&sb, "  %s: %s\n", s.Path, s.Symbol)
 	}
-
-	result := sb.String()
-	if len(result) <= maxSummaryBytes {
-		return result
+	sb.WriteString(signaturesOmittedNotice)
+	if sb.Len() <= maxSummaryBytes {
+		fmt.Fprintf(os.Stderr,
+			"codeindex: WARNING: signatures omitted to fit context limit (%d chars with signatures > %d limit)\n",
+			withSigs, maxSummaryBytes)
+		return sb.String()
 	}
 
-	return truncatedSummary(idx, len(result))
+	return truncatedSummary(idx, sb.Len())
 }
+
+// signaturesOmittedNotice tells the model why Go symbols appear without
+// signatures when the signature listing did not fit.
+const signaturesOmittedNotice = "[SIGNATURES OMITTED: symbols listed by name only to fit context limit]\n"
 
 // symbolSectionHeader is included in the budget so the final output stays
 // within maxSummaryBytes.

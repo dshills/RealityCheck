@@ -256,8 +256,8 @@ Profiles modulate how the LLM interprets the spec and plan.
 - Missing evidence → absent
 - WARN drift → CRITICAL, INFO drift → WARN
 
-Without `--strict`, the model is told that the inventory holds names, not
-source, and to judge behavior from them: a `Set` method in a read-only service
+Without `--strict`, the model is told that the inventory holds names and Go
+signatures, not source, and to judge behavior from them: a `Set` method in a read-only service
 is reported as a violation, cited with `MEDIUM` confidence. Strict mode drops
 that rule, so behavior a name only implies counts as missing evidence.
 
@@ -279,7 +279,13 @@ internal/verdict/     Scoring and verdict logic
 internal/render/      JSON and Markdown renderers
 ```
 
-Symbol extraction is regex-based (no full AST). Supported languages: Go, JavaScript/TypeScript, Python, Rust.
+Supported languages: Go, JavaScript/TypeScript, Python, Rust. Go files are
+parsed with `go/parser`, and each function, method, and type is listed with its
+declaration signature (`func (s *Store) Set(key, value string)`,
+`type Store struct`): no bodies, struct fields, interface methods, or comments.
+A Go file that does not parse, and the other languages, use regex extraction
+and list names only. If signatures would push the inventory past its 40 KB
+limit, symbols are listed by name only, with a notice, before any are dropped.
 
 ### Code inventory
 
@@ -325,5 +331,5 @@ go vet ./...
 ## Security & Privacy
 
 - No telemetry emitted by default
-- Raw code is **never** sent to the LLM — only file paths, symbol names, and dependency manifest text
+- Raw code is **never** sent to the LLM — only file paths, symbol names, Go declaration signatures (no bodies or comments), and dependency manifest text
 - `--debug` prints the assembled prompt to stderr (no redaction needed since code content is absent)
