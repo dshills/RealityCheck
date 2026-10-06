@@ -36,7 +36,8 @@ func (s Segmenter) ParseFile(path string) ([]Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mdparse: open %s: %w", path, err)
 	}
-	defer f.Close()
+	// Read-only file: a Close error cannot lose data and is not actionable.
+	defer func() { _ = f.Close() }()
 	return s.ParseReader(f)
 }
 

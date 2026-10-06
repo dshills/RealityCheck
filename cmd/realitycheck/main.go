@@ -427,7 +427,7 @@ func atomicWrite(path string, data []byte) error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()        // the write error is the one to report
 		_ = os.Remove(tmpName) // best-effort cleanup
 		return fmt.Errorf("write temp file: %w", err)
 	}
