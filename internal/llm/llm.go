@@ -32,6 +32,11 @@ var ErrInvalidModelOutput = errors.New("llm: invalid model output after repair a
 // should exit with code 4 and suggest raising --max-tokens.
 var ErrResponseTruncated = errors.New("llm: response truncated at the output token limit")
 
+// DefaultMaxTokens is the default output token limit for the CLI and the
+// library. 4096 could not hold a report for a real spec; 16384 fits several
+// hundred coverage entries and is within every default model's output limit.
+const DefaultMaxTokens = 16384
+
 // Provider is the interface for LLM backends.
 type Provider interface {
 	Complete(ctx context.Context, systemPrompt, userPrompt string, maxTokens int, temperature float64) (string, error)

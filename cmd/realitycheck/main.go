@@ -26,11 +26,6 @@ import (
 
 const version = "0.1.0"
 
-// defaultMaxTokens is the default output token limit. 4096 could not hold a
-// report for a real spec; 16384 fits several hundred coverage entries and is
-// within every default model's output limit.
-const defaultMaxTokens = 16384
-
 // Process exit codes as defined in SPEC §6 and PLAN Step 12.
 const (
 	exitCodeGeneral   = 1 // unexpected/internal error
@@ -120,7 +115,7 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&f.strict, "strict", false, "strict mode: escalate drift severities and treat unclear coverage as NOT_IMPLEMENTED (env: REALITYCHECK_STRICT)")
 	cmd.Flags().StringVar(&f.failOn, "fail-on", "", "exit 2 if verdict >= this level (ALIGNED|PARTIALLY_ALIGNED|DRIFT_DETECTED|VIOLATION) (env: REALITYCHECK_FAIL_ON)")
 	cmd.Flags().StringVar(&f.severityThreshold, "severity-threshold", "", "filter findings below this severity from output (INFO|WARN|CRITICAL); does not affect scoring (env: REALITYCHECK_SEVERITY_THRESHOLD)")
-	cmd.Flags().IntVar(&f.maxTokens, "max-tokens", defaultMaxTokens, "maximum tokens for LLM response (env: REALITYCHECK_LLM_MAX_TOKENS)")
+	cmd.Flags().IntVar(&f.maxTokens, "max-tokens", llm.DefaultMaxTokens, "maximum tokens for LLM response (env: REALITYCHECK_LLM_MAX_TOKENS)")
 	cmd.Flags().Float64Var(&f.temperature, "temperature", 0.2, "LLM temperature (env: REALITYCHECK_LLM_TEMPERATURE)")
 	cmd.Flags().StringVar(&f.model, "model", "", "model ID (default varies by provider: claude-opus-4-6 / gpt-4o / gemini-2.0-flash) (env: REALITYCHECK_LLM_MODEL)")
 	cmd.Flags().BoolVar(&f.offline, "offline", false, "skip API key pre-flight check; use when operating with an injected mock provider or cached data")
