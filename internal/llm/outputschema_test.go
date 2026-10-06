@@ -117,7 +117,7 @@ func TestAnthropicParams_PreserveSchemaOrder(t *testing.T) {
 }
 
 func TestOpenAIParams_PreserveSchemaOrder(t *testing.T) {
-	params, err := openaiParams("m", Request{System: "s", User: "u", MaxTokens: 10, Schema: reportSchema})
+	params, err := openaiParams("m", Request{System: "s", User: "u", MaxTokens: 10, Temperature: 0.2, Schema: reportSchema})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,10 +125,15 @@ func TestOpenAIParams_PreserveSchemaOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"response_format"`, `"strict":true`, `"name":"realitycheck_report"`} {
+	for _, want := range []string{`"response_format"`, `"strict":true`, `"name":"realitycheck_report"`,
+		`"max_completion_tokens":10`, `"temperature":0.2`} {
 		if !bytes.Contains(body, []byte(want)) {
 			t.Errorf("request missing %s: %s", want, body)
 		}
+	}
+	// Newer models reject max_tokens outright.
+	if bytes.Contains(body, []byte(`"max_tokens"`)) {
+		t.Errorf("request must not send max_tokens: %s", body)
 	}
 	assertOrder(t, body, "drift", "violations", "coverage")
 }

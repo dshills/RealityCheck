@@ -2,11 +2,15 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"sync/atomic"
 
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/shared"
 )
 
@@ -14,6 +18,9 @@ import (
 type openaiProvider struct {
 	client openai.Client
 	model  string
+	// noTemperature is set once the model rejects a temperature, so later
+	// calls (such as the repair attempt) omit it instead of failing first.
+	noTemperature atomic.Bool
 }
 
 func newOpenAIProvider(model string) (Provider, error) {
@@ -39,9 +46,9 @@ func (p *openaiProvider) Complete(
 // json_schema response format.
 func openaiParams(model string, req Request) (openai.ChatCompletionNewParams, error) {
 	params := openai.ChatCompletionNewParams{
-		Model:       shared.ChatModel(model),
-		MaxTokens:   openai.Int(int64(req.MaxTokens)),
-		Temperature: openai.Float(req.Temperature),
+		Model:               shared.ChatModel(model),
+		MaxCompletionTokens: openai.Int(int64(req.MaxTokens)),
+		Temperature:         openai.Float(req.Temperature),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(req.System),
 			openai.UserMessage(req.User),
@@ -65,17 +72,38 @@ func openaiParams(model string, req Request) (openai.ChatCompletionNewParams, er
 	return params, nil
 }
 
-// Generate sends one chat completion request.
+// Generate sends one chat completion request. Reasoning models accept only
+// the default temperature; when the API rejects it, the request is retried
+// once without one.
 func (p *openaiProvider) Generate(ctx context.Context, req Request) (Response, error) {
 	params, err := openaiParams(p.model, req)
 	if err != nil {
 		return Response{}, err
 	}
+	if p.noTemperature.Load() {
+		params.Temperature = param.Opt[float64]{}
+	}
 	resp, err := p.client.Chat.Completions.New(ctx, params)
+	if err != nil && params.Temperature.Valid() && temperatureRejected(err) {
+		p.noTemperature.Store(true)
+		params.Temperature = param.Opt[float64]{}
+		resp, err = p.client.Chat.Completions.New(ctx, params)
+	}
 	if err != nil {
 		return Response{}, fmt.Errorf("openai: chat.completions.new: %w", err)
 	}
 	return openaiResponse(resp)
+}
+
+// temperatureRejected reports whether err is the model refusing any
+// non-default temperature, as reasoning models do. An out-of-range value
+// fails with a different code (decimal_above_max_value) and is returned.
+func temperatureRejected(err error) bool {
+	var apiErr *openai.Error
+	return errors.As(err, &apiErr) &&
+		apiErr.StatusCode == http.StatusBadRequest &&
+		apiErr.Param == "temperature" &&
+		(apiErr.Code == "unsupported_value" || apiErr.Code == "unsupported_parameter")
 }
 
 // openaiResponse extracts text and truncation. Empty content cut off at the
