@@ -4,11 +4,17 @@
 package codeindex
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 )
 
@@ -140,19 +146,6 @@ func isConfig(name string) bool {
 	return false
 }
 
-// defaultIgnore is the default set of directory names to skip.
-// Note: ignore matching is against directory base names only, not full paths.
-// To ignore a specific subdirectory by path, use ignorePatterns in Build().
-var defaultIgnore = map[string]bool{
-	".git":         true,
-	"vendor":       true,
-	"node_modules": true,
-	"__pycache__":  true,
-	".build":       true,
-	"dist":         true,
-	"build":        true,
-}
-
 // classifyLanguage returns a language label for a file extension.
 func classifyLanguage(ext string) string {
 	switch ext {
@@ -183,94 +176,350 @@ func classifyLanguage(ext string) string {
 	}
 }
 
-// Build walks the directory at root and builds an inventory.
-// ignorePatterns supplements the default ignore list; entries are matched
-// against directory base names (not full paths).
-func Build(root string, ignorePatterns []string) (Index, error) {
-	extraIgnore := make(map[string]bool, len(ignorePatterns))
-	for _, p := range ignorePatterns {
-		extraIgnore[p] = true
-	}
+// defaultIgnoreDirs are directory names whose contents are never indexed:
+// VCS and dependency trees, build output, and test fixtures. Fixture trees
+// often hold fake specs, plans, and code that look exactly like drift.
+var defaultIgnoreDirs = map[string]bool{
+	".git":         true,
+	"vendor":       true,
+	"node_modules": true,
+	"__pycache__":  true,
+	".build":       true,
+	"dist":         true,
+	"build":        true,
+	"testdata":     true,
+	"fixtures":     true,
+}
 
-	shouldIgnoreDir := func(name string) bool {
-		return defaultIgnore[name] || extraIgnore[name]
+// lockfiles are dependency lock files: large, generated, and not evidence.
+var lockfiles = map[string]bool{
+	"go.sum": true, "go.work.sum": true, "package-lock.json": true,
+	"yarn.lock": true, "pnpm-lock.yaml": true, "Cargo.lock": true,
+	"poetry.lock": true, "Gemfile.lock": true, "composer.lock": true,
+	"uv.lock": true,
+}
+
+// toolingFiles are repository tooling files that are not evidence.
+var toolingFiles = map[string]bool{
+	".gitignore": true, ".gitattributes": true, ".gitmodules": true,
+	".editorconfig": true, ".dockerignore": true, ".DS_Store": true,
+}
+
+// excludedExts are media, archive, and compiled-binary extensions.
+var excludedExts = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true,
+	".ico": true, ".webp": true, ".bmp": true, ".pdf": true,
+	".zip": true, ".tar": true, ".gz": true, ".tgz": true, ".bz2": true, ".xz": true, ".7z": true,
+	".exe": true, ".dll": true, ".so": true, ".dylib": true, ".a": true, ".o": true,
+	".bin": true, ".wasm": true, ".class": true, ".jar": true, ".pyc": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true,
+}
+
+// Options controls what Build includes.
+type Options struct {
+	// Ignore lists extra glob patterns (path.Match syntax). A pattern
+	// without "/" matches any path component, i.e. a directory or file name
+	// ("generated", "*.pb.go"). A pattern with "/" matches the slash path
+	// relative to the root, or anything under it when it names a directory
+	// ("internal/gen", "docs/*.md").
+	Ignore []string
+	// ExcludeTests leaves test files and test functions out of the index.
+	ExcludeTests bool
+	// NoGit walks the directory even inside a Git work tree, so .gitignore
+	// is not applied.
+	NoGit bool
+}
+
+// Build builds an inventory of root with default options plus extra
+// ignore patterns. See BuildWithOptions.
+func Build(root string, ignorePatterns []string) (Index, error) {
+	return BuildWithOptions(root, Options{Ignore: ignorePatterns})
+}
+
+// BuildWithOptions builds an inventory of root.
+//
+// Inside a Git work tree the candidate files are those `git ls-files`
+// reports as tracked or untracked-but-not-ignored, so .gitignore applies.
+// Outside Git, with NoGit, or when the root itself is gitignored, the
+// directory is walked. Either way, default
+// exclusions apply (defaultIgnoreDirs, lockfiles, licenses, media and
+// binaries, including extensionless binaries detected by content), then
+// opts.Ignore and opts.ExcludeTests. A symlinked root is resolved, but
+// symbolic links inside it, to files or to directories anywhere on the
+// path, are not followed.
+func BuildWithOptions(root string, opts Options) (Index, error) {
+	// The root is what the caller asked to index, so a symlinked root is
+	// resolved (on macOS /tmp is one). Links inside it are not followed.
+	// Resolving first also keeps Git and the walker consistent: WalkDir
+	// does not descend into a symlinked root.
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return Index{}, fmt.Errorf("codeindex: resolve %s: %w", root, err)
+	}
+	// Walk outside Git, or when the root itself is gitignored: pointing at
+	// an ignored tree (e.g. generated code) is an explicit choice, and Git
+	// would list at most its force-added files. A root that is not ignored
+	// keeps Git's answer, even when every file under it is ignored.
+	var paths []string
+	useGit := !opts.NoGit && !gitIgnored(root)
+	if useGit {
+		paths, err = gitFiles(root)
+	}
+	if !useGit || err != nil {
+		paths, err = walkFiles(root, opts)
+		if err != nil {
+			return Index{}, fmt.Errorf("codeindex: walk %s: %w", root, err)
+		}
 	}
 
 	var idx Index
+	dirs := dirChecker{root: root, ok: map[string]bool{}}
+	for _, rel := range paths {
+		if excluded(rel, opts) || !dirs.realDirs(rel) {
+			continue
+		}
+		indexFile(&idx, root, rel)
+	}
+	return idx, nil
+}
 
+// dirChecker reports whether every directory on a path under root is a
+// real directory, not a symlink. Git keeps listing tracked files under a
+// directory that was replaced by a symlink, and reading through it would
+// index files outside root. Results are cached per directory.
+type dirChecker struct {
+	root string
+	ok   map[string]bool
+}
+
+func (c dirChecker) realDirs(rel string) bool {
+	dir := path.Dir(rel)
+	if dir == "." {
+		return true
+	}
+	if ok, seen := c.ok[dir]; seen {
+		return ok
+	}
+	ok := c.realDirs(dir) // parents first
+	if ok {
+		info, err := os.Lstat(filepath.Join(c.root, filepath.FromSlash(dir)))
+		ok = err == nil && info.IsDir()
+	}
+	c.ok[dir] = ok
+	return ok
+}
+
+// gitFiles lists files under root that Git tracks or would track, as slash
+// paths relative to root. It fails when root is not in a Git work tree or
+// git is unavailable.
+func gitFiles(root string) ([]string, error) {
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").Output()
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	// Unmerged files appear once per conflict stage; keep one of each.
+	sort.Strings(paths)
+	return slices.Compact(paths), nil
+}
+
+// gitIgnored reports whether Git ignores root itself, directly or through
+// an ignored parent. It is false outside a work tree and at its top level.
+//
+// The check runs from the top level on the root's path without a trailing
+// slash: "check-ignore ." from inside the root would also report a root
+// whose own .gitignore merely ignores everything in it.
+func gitIgnored(root string) bool {
+	top, err := exec.Command("git", "-C", root, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return false
+	}
+	prefix, err := exec.Command("git", "-C", root, "rev-parse", "--show-prefix").Output()
+	if err != nil {
+		return false
+	}
+	// Strip only Git's line terminator: directory names may contain
+	// leading or trailing spaces.
+	topDir := strings.TrimSuffix(string(top), "\n")
+	rel := strings.TrimSuffix(strings.TrimSuffix(string(prefix), "\n"), "/")
+	if rel == "" {
+		return false
+	}
+	// --no-index: decide by ignore rules alone. Otherwise a directory with
+	// a force-added tracked file would not count as ignored. "--" keeps a
+	// path that starts with "-" from being read as an option.
+	return exec.Command("git", "-C", topDir, "check-ignore", "-q", "--no-index", "--", rel).Run() == nil
+}
+
+// walkFiles walks root, pruning ignored directories, and returns slash
+// paths relative to root.
+func walkFiles(root string, opts Options) ([]string, error) {
+	var paths []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return relErr
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
 		}
-
+		slash := filepath.ToSlash(rel)
 		if d.IsDir() {
-			if shouldIgnoreDir(d.Name()) && path != root {
+			if path != root && (defaultIgnoreDirs[d.Name()] || matchesIgnore(slash, opts.Ignore)) {
 				return fs.SkipDir
 			}
 			return nil
 		}
-
-		ext := filepath.Ext(d.Name())
-
-		// Dependency manifests: read and store full content.
-		if isManifest(d.Name()) {
-			data, readErr := os.ReadFile(path)
-			if readErr == nil {
-				idx.DependencyManifests = append(idx.DependencyManifests, ManifestEntry{
-					Path:    rel,
-					Content: string(data),
-				})
-			}
-			return nil
-		}
-
-		// Config files: store path only.
-		if isConfig(d.Name()) {
-			idx.ConfigFiles = append(idx.ConfigFiles, rel)
-			return nil
-		}
-
-		lang := classifyLanguage(ext)
-		idx.Files = append(idx.Files, FileEntry{Path: rel, Language: lang})
-
-		// Skip files that are too large to read for symbol extraction.
-		info, infoErr := d.Info()
-		if infoErr != nil || info.Size() > maxFileSize {
-			return nil
-		}
-
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			// Skip unreadable files silently.
-			return nil
-		}
-		content := string(data)
-
-		if isTestFile(d.Name()) {
-			if extractor, ok := testExtractors[ext]; ok {
-				for _, fn := range extractor(content) {
-					idx.Tests = append(idx.Tests, TestEntry{Path: rel, Function: fn})
-				}
-			}
-		} else {
-			if extractor, ok := symbolExtractors[ext]; ok {
-				for _, sym := range extractor(content) {
-					idx.Symbols = append(idx.Symbols, SymbolEntry{Path: rel, Symbol: sym})
-				}
-			}
-		}
-
+		paths = append(paths, slash)
 		return nil
 	})
-	if err != nil {
-		return Index{}, fmt.Errorf("codeindex: walk %s: %w", root, err)
+	return paths, err
+}
+
+// excluded reports whether the slash path rel is left out of the index.
+func excluded(rel string, opts Options) bool {
+	parts := strings.Split(rel, "/")
+	for _, dir := range parts[:len(parts)-1] {
+		if defaultIgnoreDirs[dir] {
+			return true
+		}
+	}
+	base := parts[len(parts)-1]
+	switch {
+	case lockfiles[base], toolingFiles[base], isLicenseDoc(base),
+		excludedExts[strings.ToLower(path.Ext(base))]:
+		return true
+	case opts.ExcludeTests && isTestFile(base):
+		return true
+	}
+	return matchesIgnore(rel, opts.Ignore)
+}
+
+// isLicenseDoc reports whether base names a license document: LICENSE,
+// LICENCE, COPYING, or UNLICENSE, optionally with a variant suffix
+// ("LICENSE-MIT") and a text extension. Source files such as license.go
+// are not license documents.
+func isLicenseDoc(base string) bool {
+	ext := strings.ToLower(path.Ext(base))
+	switch ext {
+	case "", ".md", ".txt", ".rst":
+	default:
+		return false
+	}
+	stem := strings.ToUpper(strings.TrimSuffix(base, path.Ext(base)))
+	for _, name := range []string{"LICENSE", "LICENCE", "COPYING", "UNLICENSE"} {
+		if stem == name || strings.HasPrefix(stem, name+"-") || strings.HasPrefix(stem, name+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesIgnore reports whether rel matches any pattern (see Options.Ignore).
+func matchesIgnore(rel string, patterns []string) bool {
+	for _, pat := range patterns {
+		pat = strings.Trim(strings.TrimSpace(pat), "/")
+		if pat == "" {
+			continue
+		}
+		if !strings.Contains(pat, "/") {
+			for _, part := range strings.Split(rel, "/") {
+				if ok, _ := path.Match(pat, part); ok {
+					return true
+				}
+			}
+			continue
+		}
+		if ok, _ := path.Match(pat, rel); ok {
+			return true
+		}
+		// A directory pattern also covers everything beneath it.
+		for dir := path.Dir(rel); dir != "."; dir = path.Dir(dir) {
+			if ok, _ := path.Match(pat, dir); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// indexFile adds one file to idx. rel is a slash path relative to root.
+// Non-regular files (symlinks, devices, files Git lists but that no longer
+// exist) are skipped, as are binary files detected by content.
+func indexFile(idx *Index, root, rel string) {
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	info, err := os.Lstat(full)
+	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	name := filepath.Base(full)
+	relPath := filepath.FromSlash(rel)
+	ext := filepath.Ext(name)
+
+	// Content wins over the name: a binary is skipped whatever it is called,
+	// including manifest and config names.
+	if isBinary(full) {
+		return
 	}
 
-	return idx, nil
+	// Dependency manifests: read and store full content.
+	if isManifest(name) {
+		if data, err := os.ReadFile(full); err == nil {
+			idx.DependencyManifests = append(idx.DependencyManifests, ManifestEntry{Path: relPath, Content: string(data)})
+		}
+		return
+	}
+
+	// Config files: store path only.
+	if isConfig(name) {
+		idx.ConfigFiles = append(idx.ConfigFiles, relPath)
+		return
+	}
+
+	lang := classifyLanguage(ext)
+	idx.Files = append(idx.Files, FileEntry{Path: relPath, Language: lang})
+
+	// Skip files that are too large to read for symbol extraction.
+	if info.Size() > maxFileSize {
+		return
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return // unreadable: listed, but no symbols
+	}
+	content := string(data)
+
+	if isTestFile(name) {
+		if extractor, ok := testExtractors[ext]; ok {
+			for _, fn := range extractor(content) {
+				idx.Tests = append(idx.Tests, TestEntry{Path: relPath, Function: fn})
+			}
+		}
+		return
+	}
+	if extractor, ok := symbolExtractors[ext]; ok {
+		for _, sym := range extractor(content) {
+			idx.Symbols = append(idx.Symbols, SymbolEntry{Path: relPath, Symbol: sym})
+		}
+	}
+}
+
+// isBinary reports whether the file looks binary: a NUL byte in its first
+// 8 KB, the same heuristic Git uses.
+func isBinary(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, 8000)
+	n, _ := io.ReadFull(f, buf)
+	return bytes.IndexByte(buf[:n], 0) >= 0
 }
 
 // writeNonSymbolSections appends all non-symbol sections (file tree, tests,

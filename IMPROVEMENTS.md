@@ -99,6 +99,8 @@ Two conclusions drive the ordering below:
   and invites the model to mark "Purpose" as IMPLEMENTED/HIGH.
 
 ### 5. Inventory hygiene
+**Status: done.** Markdown files are kept: the inventory holds only their paths, and docs such as README.md can be legitimate evidence. The fake spec/plan files that caused noise live under `testdata/`, which is excluded.
+
 **Accuracy · Tokens**
 - Respect `.gitignore` (the baseline shipped the gitignored `realitycheck`
   binary to the model). Use `git ls-files` when inside a repo, fall back to the

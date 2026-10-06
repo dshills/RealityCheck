@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -268,5 +270,33 @@ func TestCheck_AllItemsOption(t *testing.T) {
 	}
 	if len(res.Report.Coverage.Spec) != 2 {
 		t.Errorf("AllItems: spec entries = %d, want 2", len(res.Report.Coverage.Spec))
+	}
+}
+
+func TestCheck_InventoryOptions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "store.go"), []byte("package s\nfunc Get() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resp := `{"drift":[],"violations":[],"coverage":{"spec":[{"id":"SPEC-001","status":"IMPLEMENTED","evidence":[{"path":"store.go","symbol":"Get","confidence":"HIGH"}],"notes":""}],"plan":[{"id":"PLAN-001","status":"IMPLEMENTED","evidence":[],"notes":""}]}}`
+	for _, tc := range []struct {
+		ignore []string
+		want   Confidence
+	}{
+		{nil, "HIGH"},
+		{[]string{"store.go"}, "LOW"},
+	} {
+		install(t, &recordingGenerator{response: llm.Response{Text: resp}})
+		opts := baseOptions(t)
+		opts.CodeRoot = root
+		opts.IgnorePatterns = tc.ignore
+
+		res, err := Check(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.Report.Coverage.Spec[0].Evidence[0].Confidence; got != tc.want {
+			t.Errorf("ignore=%v: confidence = %s, want %s", tc.ignore, got, tc.want)
+		}
 	}
 }

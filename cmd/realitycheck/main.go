@@ -86,6 +86,8 @@ type checkFlags struct {
 	offline           bool
 	structuredOutput  bool
 	allItems          bool
+	ignore            []string
+	includeTests      bool
 	verbose           bool
 	debug             bool
 }
@@ -122,6 +124,8 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.model, "model", "", "model ID (default varies by provider: claude-opus-4-6 / gpt-4o / gemini-2.0-flash) (env: REALITYCHECK_LLM_MODEL)")
 	cmd.Flags().BoolVar(&f.offline, "offline", false, "skip API key pre-flight check; use when operating with an injected mock provider or cached data")
 	cmd.Flags().BoolVar(&f.structuredOutput, "structured-output", true, "constrain model output with the provider's native JSON schema support; disable for models that reject it (env: REALITYCHECK_STRUCTURED_OUTPUT)")
+	cmd.Flags().StringSliceVar(&f.ignore, "ignore", nil, "glob of paths to leave out of the code inventory; repeatable or comma-separated. Without \"/\" it matches any directory or file name (\"generated\", \"*.pb.go\"); with \"/\" it matches a path from the code root (\"internal/gen\") (env: REALITYCHECK_IGNORE)")
+	cmd.Flags().BoolVar(&f.includeTests, "include-tests", true, "include test files and test functions in the code inventory (env: REALITYCHECK_INCLUDE_TESTS)")
 	cmd.Flags().BoolVar(&f.allItems, "all-items", false, "require coverage for every parsed item, not only requirements and plan steps (env: REALITYCHECK_ALL_ITEMS)")
 	cmd.Flags().BoolVar(&f.verbose, "verbose", false, "print execution trace to stderr")
 	cmd.Flags().BoolVar(&f.debug, "debug", false, "dump assembled prompt to stderr")
@@ -145,6 +149,8 @@ func newCheckCmd() *cobra.Command {
 //	REALITYCHECK_STRICT              --strict (true/1/yes to enable)
 //	REALITYCHECK_STRUCTURED_OUTPUT   --structured-output (false/0/no to disable)
 //	REALITYCHECK_ALL_ITEMS           --all-items (true/1/yes to enable)
+//	REALITYCHECK_IGNORE              --ignore (comma-separated globs)
+//	REALITYCHECK_INCLUDE_TESTS       --include-tests (false/0/no to disable)
 func applyEnvDefaults(cmd *cobra.Command, f *checkFlags) {
 	envStr := func(flagName string, dst *string, envKey string) {
 		if !cmd.Flags().Changed(flagName) {
@@ -188,6 +194,12 @@ func applyEnvDefaults(cmd *cobra.Command, f *checkFlags) {
 	envBool("strict", &f.strict, "REALITYCHECK_STRICT")
 	envBool("structured-output", &f.structuredOutput, "REALITYCHECK_STRUCTURED_OUTPUT")
 	envBool("all-items", &f.allItems, "REALITYCHECK_ALL_ITEMS")
+	envBool("include-tests", &f.includeTests, "REALITYCHECK_INCLUDE_TESTS")
+	if !cmd.Flags().Changed("ignore") {
+		if v := os.Getenv("REALITYCHECK_IGNORE"); v != "" {
+			f.ignore = strings.Split(v, ",")
+		}
+	}
 }
 
 func runCheck(ctx context.Context, f checkFlags) error {
@@ -278,11 +290,15 @@ func runCheck(ctx context.Context, f checkFlags) error {
 
 	// Step 4: Build code index.
 	logVerbose("building code index")
-	idx, err := codeindex.Build(f.codeRoot, nil)
+	idx, err := codeindex.BuildWithOptions(f.codeRoot, codeindex.Options{
+		Ignore:       f.ignore,
+		ExcludeTests: !f.includeTests,
+	})
 	if err != nil {
 		return &exitError{exitCodeBadInput, fmt.Sprintf("error: build code index: %v", err)}
 	}
-	logVerbose(fmt.Sprintf("indexed %d files", len(idx.Files)))
+	logVerbose(fmt.Sprintf("indexed %d files, %d symbols, %d tests, %d manifests, %d config files",
+		len(idx.Files), len(idx.Symbols), len(idx.Tests), len(idx.DependencyManifests), len(idx.ConfigFiles)))
 
 	// Step 5: Load profile.
 	logVerbose("loading profile")

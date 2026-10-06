@@ -78,6 +78,8 @@ realitycheck check [path] [flags]
 --max-tokens <n>           Output token limit (default: 16384)
 --structured-output=false  Send the schema in the prompt only, for models that reject native JSON schema
 --all-items                Require coverage for every parsed item, not only requirements and plan steps
+--ignore <glob>            Leave paths out of the code inventory (repeatable, comma-separated)
+--include-tests=false      Leave test files and test functions out of the code inventory
 --offline                  Skip API key pre-flight check
 --verbose                  Print execution trace to stderr
 --debug                    Dump assembled prompt to stderr
@@ -268,6 +270,24 @@ internal/render/      JSON and Markdown renderers
 ```
 
 Symbol extraction is regex-based (no full AST). Supported languages: Go, JavaScript/TypeScript, Python, Rust.
+
+### Code inventory
+
+Inside a Git work tree the inventory lists the files `git ls-files` reports as
+tracked or untracked-but-not-ignored, so `.gitignore` applies; elsewhere the
+directory is walked. These are always left out:
+
+- directories named `.git`, `vendor`, `node_modules`, `__pycache__`, `.build`,
+  `dist`, `build`, `testdata`, `fixtures` (fixture trees often hold fake specs,
+  plans, and code that look exactly like drift);
+- lockfiles (`go.sum`, `package-lock.json`, `Cargo.lock`, …), license files,
+  Git and editor dotfiles, images, fonts, archives, and compiled binaries,
+  including extensionless binaries detected by content;
+- symbolic links.
+
+`--ignore` adds glob patterns. A pattern without `/` matches any directory or
+file name (`generated`, `*.pb.go`); a pattern with `/` matches a path from the
+code root and everything under it (`internal/gen`, `docs/*.md`).
 
 ---
 

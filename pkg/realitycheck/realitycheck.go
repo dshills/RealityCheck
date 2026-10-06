@@ -86,6 +86,10 @@ type CheckOptions struct {
 	// AllItems requires coverage for every parsed item, not only
 	// requirements and plan steps, like the CLI's --all-items flag.
 	AllItems bool
+	// ExcludeTests leaves test files out of the code inventory, like the
+	// CLI's --include-tests=false. IgnorePatterns uses the same glob rules
+	// as the CLI's --ignore.
+	ExcludeTests bool
 }
 
 type CheckResult struct {
@@ -146,7 +150,10 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 	if err != nil {
 		return nil, appError(ErrorInput, fmt.Errorf("parse plan: %w", err))
 	}
-	index, err := codeindex.Build(codeRoot, opts.IgnorePatterns)
+	index, err := codeindex.BuildWithOptions(codeRoot, codeindex.Options{
+		Ignore:       opts.IgnorePatterns,
+		ExcludeTests: opts.ExcludeTests,
+	})
 	if err != nil {
 		return nil, appError(ErrorInput, fmt.Errorf("build code index: %w", err))
 	}

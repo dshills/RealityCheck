@@ -345,3 +345,51 @@ func TestIntegration_AllItems(t *testing.T) {
 		}
 	}
 }
+
+func TestIntegration_IgnoreLeavesFilesOutOfInventory(t *testing.T) {
+	injectMock(t, []string{alignedMockResponse})
+	f := baseFlags(t, "aligned")
+	f.ignore = []string{"store.go"}
+
+	if err := runCheck(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	var report schema.Report
+	if err := json.Unmarshal(readOutput(t, f.out), &report); err != nil {
+		t.Fatal(err)
+	}
+	// The canned response cites store.go, which is no longer in the
+	// inventory, so its evidence must be downgraded.
+	for _, e := range report.Coverage.Spec {
+		for _, ev := range e.Evidence {
+			if ev.Path == "store.go" && ev.Confidence != schema.ConfidenceLow {
+				t.Errorf("%s cites ignored store.go at %s, want LOW", e.ID, ev.Confidence)
+			}
+		}
+	}
+}
+
+func TestApplyEnvDefaults_InventoryFlags(t *testing.T) {
+	t.Setenv("REALITYCHECK_IGNORE", "generated,*.pb.go")
+	t.Setenv("REALITYCHECK_INCLUDE_TESTS", "false")
+	cmd := newCheckCmd()
+	if err := cmd.ParseFlags(nil); err != nil {
+		t.Fatal(err)
+	}
+	f := checkFlags{includeTests: true}
+	applyEnvDefaults(cmd, &f)
+	if strings.Join(f.ignore, "|") != "generated|*.pb.go" || f.includeTests {
+		t.Errorf("ignore=%q includeTests=%v", f.ignore, f.includeTests)
+	}
+
+	// Flags win over the environment.
+	cmd = newCheckCmd()
+	if err := cmd.ParseFlags([]string{"--ignore", "vendor2", "--include-tests=true"}); err != nil {
+		t.Fatal(err)
+	}
+	f = checkFlags{ignore: []string{"vendor2"}, includeTests: true}
+	applyEnvDefaults(cmd, &f)
+	if strings.Join(f.ignore, "|") != "vendor2" || !f.includeTests {
+		t.Errorf("flags should win: ignore=%q includeTests=%v", f.ignore, f.includeTests)
+	}
+}
