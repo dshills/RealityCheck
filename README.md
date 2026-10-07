@@ -67,7 +67,8 @@ realitycheck check [path] [flags]
 
 ```
 --code-root <dir>          Root directory to analyze (default: cwd)
---format json|md           Output format (default: json)
+--format json|agent|md     Output format (default: json); see "Output formats"
+--show-aligned             With --format md, also list IMPLEMENTED coverage rows
 --out <file>               Write output to file instead of stdout
 --profile <name>           Enforcement profile: general, strict-api, data-pipeline, library
 --provider <name>          LLM provider: anthropic (alias claude), openai, google (alias gemini) (default: anthropic)
@@ -263,6 +264,40 @@ violations are complete is never trusted and goes through JSON repair instead.
   ]
 }
 ```
+
+### Output formats
+
+- `json` (default): the full report above.
+- `agent`: compact single-line JSON for an agent's self-correction loop. It
+  holds the summary (with coverage counts by status), `warnings` in plain words
+  (provisional result, truncated inventory, output cut at `--max-tokens`),
+  `gaps` (only the items that are not IMPLEMENTED, with their line range, a note
+  capped at 200 characters, and up to three evidence locations), the drift
+  findings and violations, and `next_actions`: at most 10 steps, most severe
+  first, each `{action, ref, target}`. `fix` resolves a violation,
+  `remove_or_authorize` a drift finding (remove the code, or add it to the spec
+  or plan), `implement` a NOT_IMPLEMENTED item, `complete` a PARTIAL one; `ref`
+  names the entry that says why, and `target` is `path:symbol` when known. Items
+  a violation already covers, and placeholders the model never evaluated, get no
+  action. On this repository's self-check the report shrinks from 108 KB to
+  27 KB.
+- `md`: Markdown with the coverage tables reduced to the rows that need work
+  and a count of the IMPLEMENTED ones; `--show-aligned` lists them all.
+
+```json
+{"tool":"realitycheck","version":"0.1.0","summary":{"verdict":"VIOLATION","score":73,"critical":1,"warn":1,"info":0,"spec":{"implemented":1,"partial":0,"not_implemented":1,"unclear":0},"plan":{"implemented":1,"partial":0,"not_implemented":0,"unclear":0}},"gaps":[{"id":"SPEC-002","status":"NOT_IMPLEMENTED","lines":"6","note":"Set implies prohibited write support…","evidence":["store.go:Set"]}],"drift":[…],"violations":[…],"next_actions":[{"action":"fix","ref":"VIOLATION-001","target":"store.go:Set"},{"action":"remove_or_authorize","ref":"DRIFT-001","target":"store.go:Set"}]}
+```
+
+Whatever the format, and also with `--out`, a one-line result goes to stderr so
+an agent can gate without reading the report:
+
+```
+realitycheck: verdict=VIOLATION score=73 critical=1 warn=1 info=0
+```
+
+` provisional` is appended when coverage is incomplete and ` cached` when the
+result came from the cache. The library renders the same formats through
+`RenderReport` (whose `md` keeps every row) and the line through `SummaryLine`.
 
 ---
 

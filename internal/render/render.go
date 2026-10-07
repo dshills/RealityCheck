@@ -22,10 +22,25 @@ func RenderJSON(report *schema.Report) ([]byte, error) {
 	return b, nil
 }
 
+// MarkdownOptions controls RenderMarkdownWith.
+type MarkdownOptions struct {
+	// HideAligned leaves IMPLEMENTED rows out of the coverage tables and
+	// says how many were left out, so the rows that need work stand out.
+	HideAligned bool
+	// HiddenHint, if set, is appended to that count to say how to list the
+	// rows, e.g. "--show-aligned lists them".
+	HiddenHint string
+}
+
 // RenderMarkdown produces a GitHub-flavoured Markdown summary of the report,
-// suitable for PR comments or terminal output. Every finding ID present in
-// the report will appear in the output.
+// suitable for PR comments or terminal output, with every coverage row.
+// Every finding ID present in the report will appear in the output.
 func RenderMarkdown(report *schema.Report) string {
+	return RenderMarkdownWith(report, MarkdownOptions{})
+}
+
+// RenderMarkdownWith is RenderMarkdown with options.
+func RenderMarkdownWith(report *schema.Report, opts MarkdownOptions) string {
 	if report == nil {
 		return ""
 	}
@@ -38,27 +53,16 @@ func RenderMarkdown(report *schema.Report) string {
 	fmt.Fprintf(&sb, "**Critical:** %d | **Warn:** %d | **Info:** %d\n\n",
 		report.Summary.CriticalCount, report.Summary.WarnCount, report.Summary.InfoCount)
 
-	// Spec coverage table.
-	if len(report.Coverage.Spec) > 0 {
-		sb.WriteString("## Spec Coverage\n\n")
-		sb.WriteString("| ID | Status | Notes |\n")
-		sb.WriteString("|---|---|---|\n")
-		for _, e := range report.Coverage.Spec {
-			fmt.Fprintf(&sb, "| %s | %s | %s |\n", e.ID, e.Status, mdEscape(e.Notes))
-		}
-		sb.WriteString("\n")
+	specRows := make([]coverageRow, len(report.Coverage.Spec))
+	for i, e := range report.Coverage.Spec {
+		specRows[i] = coverageRow{e.ID, e.Status, e.Notes}
 	}
-
-	// Plan coverage table.
-	if len(report.Coverage.Plan) > 0 {
-		sb.WriteString("## Plan Coverage\n\n")
-		sb.WriteString("| ID | Status | Notes |\n")
-		sb.WriteString("|---|---|---|\n")
-		for _, e := range report.Coverage.Plan {
-			fmt.Fprintf(&sb, "| %s | %s | %s |\n", e.ID, e.Status, mdEscape(e.Notes))
-		}
-		sb.WriteString("\n")
+	planRows := make([]coverageRow, len(report.Coverage.Plan))
+	for i, e := range report.Coverage.Plan {
+		planRows[i] = coverageRow{e.ID, e.Status, e.Notes}
 	}
+	writeCoverageTable(&sb, "Spec Coverage", "spec items", specRows, opts)
+	writeCoverageTable(&sb, "Plan Coverage", "plan steps", planRows, opts)
 
 	// Drift findings.
 	if len(report.Drift) > 0 {
@@ -103,6 +107,45 @@ func RenderMarkdown(report *schema.Report) string {
 	}
 
 	return sb.String()
+}
+
+type coverageRow struct {
+	id     string
+	status schema.CoverageStatus
+	notes  string
+}
+
+// writeCoverageTable writes one coverage table. With opts.HideAligned,
+// IMPLEMENTED rows are counted instead of listed; a table with nothing else
+// to show is reduced to that count.
+func writeCoverageTable(sb *strings.Builder, title, noun string, rows []coverageRow, opts MarkdownOptions) {
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "## %s\n\n", title)
+	shown, hidden := 0, 0
+	for _, r := range rows {
+		if opts.HideAligned && r.status == schema.StatusImplemented {
+			hidden++
+			continue
+		}
+		if shown == 0 {
+			sb.WriteString("| ID | Status | Notes |\n")
+			sb.WriteString("|---|---|---|\n")
+		}
+		shown++
+		fmt.Fprintf(sb, "| %s | %s | %s |\n", r.id, r.status, mdEscape(r.notes))
+	}
+	if shown > 0 {
+		sb.WriteString("\n")
+	}
+	if hidden > 0 {
+		hint := ""
+		if opts.HiddenHint != "" {
+			hint = "; " + opts.HiddenHint
+		}
+		fmt.Fprintf(sb, "%d of %d %s IMPLEMENTED (not listed%s).\n\n", hidden, len(rows), noun, hint)
+	}
 }
 
 // writeEvidence renders an evidence list into sb.

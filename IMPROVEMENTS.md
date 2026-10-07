@@ -189,6 +189,13 @@ groups name again.
 
 ### 11. Agent-oriented output format
 **Tokens**
+**Status: done.** `--format agent` cuts this repo's self-check report from
+108 KB to 27 KB (drift fixture: 3.3 → 1.7 KB); most of what remains is the
+gaps list on a mid-project run. `next_actions` carry `{action, ref, target}`
+without restating the finding, and skip items a violation already covers.
+`--format md` hides IMPLEMENTED rows (`--show-aligned` restores them); the
+library's `RenderReport("md")` keeps every row, since ForgeKit renders it for
+people. The stderr summary line is always printed.
 - Add `--format agent` (or `--only-findings`): compact JSON containing summary,
   non-IMPLEMENTED coverage entries only, drift, violations, and a short
   `next_actions` list derived from findings (file, symbol, action verb). Omit

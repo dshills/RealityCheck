@@ -778,7 +778,18 @@ func validateEvidence(r *schema.PartialReport, ei evidenceIndex, errs *[]Validat
 			ev.Confidence = schema.ConfidenceLow
 			return
 		}
-		if ev.Symbol == "" || !codeindex.HasSymbolExtractor(ev.Path) || ei.hasSymbol(ev.Path, ev.Symbol) {
+		if ev.Symbol == "" || !codeindex.HasSymbolExtractor(ev.Path) {
+			return
+		}
+		if ei.hasSymbol(ev.Path, ev.Symbol) {
+			// A citation copied from an inventory signature ("func (s *Store)
+			// Set(key, value string)") is reported by its declared name;
+			// qualified names such as "Store.Get" are kept as written.
+			if strings.ContainsAny(ev.Symbol, "( ") && !ei.tests[ev.Path][strings.TrimSpace(ev.Symbol)] {
+				if name := citedName(ev.Symbol); ei.symbols[ev.Path][name] {
+					ev.Symbol = name
+				}
+			}
 			return
 		}
 		*errs = append(*errs, ValidationError{

@@ -520,3 +520,81 @@ func TestCacheCmd_ShowAndClear(t *testing.T) {
 		t.Errorf("show after clear:\n%s", got)
 	}
 }
+
+// captureStderr runs fn with os.Stderr redirected and returns what it wrote.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	done := make(chan string, 1) // the reader can finish even if fn aborts
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+	func() {
+		defer func() {
+			os.Stderr = orig
+			_ = w.Close()
+		}()
+		fn()
+	}()
+	return <-done
+}
+
+func TestIntegration_AgentFormatAndSummaryLine(t *testing.T) {
+	injectMock(t, []string{driftMockResponse})
+	f := baseFlags(t, "drift")
+	f.format = "agent"
+
+	var err error
+	stderr := captureStderr(t, func() { err = runCheck(context.Background(), f) })
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(stderr, "realitycheck: verdict=VIOLATION score=80 critical=1 warn=0 info=0") {
+		t.Errorf("stderr summary line missing even with --out:\n%s", stderr)
+	}
+
+	out := readOutput(t, f.out)
+	if bytes.Count(out, []byte("\n")) != 0 {
+		t.Error("agent output should be one line")
+	}
+	var a struct {
+		Summary     struct{ Verdict string }
+		Gaps        []struct{ ID string }
+		NextActions []struct{ Action, Ref, Target string } `json:"next_actions"`
+	}
+	if err := json.Unmarshal(out, &a); err != nil {
+		t.Fatalf("agent JSON: %v\n%s", err, out)
+	}
+	if a.Summary.Verdict != "VIOLATION" || len(a.Gaps) != 0 {
+		t.Errorf("summary %+v, gaps %+v", a.Summary, a.Gaps)
+	}
+	if len(a.NextActions) != 1 || a.NextActions[0].Action != "remove_or_authorize" || a.NextActions[0].Target != "store.go:Set" {
+		t.Errorf("next_actions = %+v", a.NextActions)
+	}
+}
+
+func TestIntegration_MarkdownHidesAlignedUnlessAsked(t *testing.T) {
+	for _, show := range []bool{false, true} {
+		injectMock(t, []string{alignedMockResponse})
+		f := baseFlags(t, "aligned")
+		f.format, f.showAligned = "md", show
+		if err := runCheck(context.Background(), f); err != nil {
+			t.Fatal(err)
+		}
+		md := string(readOutput(t, f.out))
+		listed := strings.Contains(md, "| SPEC-001 | IMPLEMENTED |")
+		if listed != show {
+			t.Errorf("--show-aligned=%v: IMPLEMENTED rows listed=%v\n%s", show, listed, md)
+		}
+		if !show && !strings.Contains(md, "3 of 3 spec items IMPLEMENTED") {
+			t.Errorf("hidden rows should be counted:\n%s", md)
+		}
+	}
+}

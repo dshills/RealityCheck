@@ -345,3 +345,24 @@ func TestFinalizeReport_InventoryMeta(t *testing.T) {
 		t.Errorf("signatures-only meta = %+v", sigs.Meta)
 	}
 }
+
+func TestValidateEvidence_SignatureCitationsBecomeNames(t *testing.T) {
+	idx := codeindex.Index{
+		Files:   []codeindex.FileEntry{{Path: "store.go", Language: "Go"}, {Path: "store.test.ts", Language: "TypeScript"}},
+		Symbols: []codeindex.SymbolEntry{{Path: "store.go", Symbol: "Set"}, {Path: "store.go", Symbol: "Get"}},
+		Tests:   []codeindex.TestEntry{{Path: "store.test.ts", Function: "handles empty input"}},
+	}
+	for cited, want := range map[[2]string]string{
+		{"store.go", "func (s *Store) Set(key, value string)"}: "Set",
+		{"store.go", "Get(key string)"}:                        "Get",
+		{"store.go", "Store.Get"}:                              "Store.Get", // qualified: kept
+		{"store.test.ts", "handles empty input"}:               "handles empty input",
+	} {
+		r := schema.PartialReport{Drift: []schema.DriftFinding{{Evidence: []schema.Evidence{{Path: cited[0], Symbol: cited[1], Confidence: schema.ConfidenceHigh}}}}}
+		var errs []ValidationError
+		validateEvidence(&r, newEvidenceIndex(idx), &errs)
+		if got := r.Drift[0].Evidence[0].Symbol; got != want || len(errs) != 0 {
+			t.Errorf("%q: symbol = %q (errs %v), want %q", cited[1], got, errs, want)
+		}
+	}
+}

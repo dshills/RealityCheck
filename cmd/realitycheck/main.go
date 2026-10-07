@@ -92,6 +92,7 @@ type checkFlags struct {
 	verbose           bool
 	debug             bool
 	noCache           bool
+	showAligned       bool
 	// cacheDir is where results are cached; empty disables the cache. The
 	// command sets it from --no-cache and the environment, so a checkFlags
 	// built directly (as in tests) never touches the user's cache.
@@ -125,7 +126,8 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.specFile, "spec", "", "path to SPEC.md (required)")
 	cmd.Flags().StringVar(&f.planFile, "plan", "", "path to PLAN.md (required)")
 	cmd.Flags().StringVar(&f.codeRoot, "code-root", "", "root of the code to analyze (default: path arg or cwd)")
-	cmd.Flags().StringVar(&f.format, "format", "json", "output format: json or md (env: REALITYCHECK_FORMAT)")
+	cmd.Flags().StringVar(&f.format, "format", "json", "output format: json (full report), agent (compact JSON: gaps, findings, next actions), or md (env: REALITYCHECK_FORMAT)")
+	cmd.Flags().BoolVar(&f.showAligned, "show-aligned", false, "with --format md, also list IMPLEMENTED coverage rows")
 	cmd.Flags().StringVar(&f.out, "out", "", "write output to this file instead of stdout")
 	cmd.Flags().StringVar(&f.profileName, "profile", "general", "enforcement profile name (env: REALITYCHECK_PROFILE)")
 	cmd.Flags().StringVar(&f.provider, "provider", "anthropic", "LLM provider: anthropic (alias claude), openai, google (alias gemini) (env: REALITYCHECK_LLM_PROVIDER)")
@@ -241,8 +243,8 @@ func runCheck(ctx context.Context, f checkFlags) error {
 		}
 		f.codeRoot = cwd
 	}
-	if f.format != "json" && f.format != "md" {
-		return &exitError{exitCodeBadInput, fmt.Sprintf("error: --format must be \"json\" or \"md\", got %q", f.format)}
+	if f.format != "json" && f.format != "md" && f.format != "agent" {
+		return &exitError{exitCodeBadInput, fmt.Sprintf("error: --format must be \"json\", \"agent\", or \"md\", got %q", f.format)}
 	}
 	// Normalize flag values to uppercase for case-insensitive matching.
 	f.failOn = strings.ToUpper(f.failOn)
@@ -435,7 +437,12 @@ func runCheck(ctx context.Context, f checkFlags) error {
 	var output []byte
 	switch f.format {
 	case "md":
-		output = []byte(render.RenderMarkdown(report))
+		output = []byte(render.RenderMarkdownWith(report, render.MarkdownOptions{HideAligned: !f.showAligned, HiddenHint: "--show-aligned lists them"}))
+	case "agent":
+		output, err = render.RenderAgent(report)
+		if err != nil {
+			return &exitError{exitCodeGeneral, fmt.Sprintf("error: render: %v", err)}
+		}
 	default:
 		output, err = render.RenderJSON(report)
 		if err != nil {
@@ -458,6 +465,9 @@ func runCheck(ctx context.Context, f checkFlags) error {
 		}
 	}
 
+	// Always printed, whatever the format or destination, so an agent can
+	// gate on the result without reading the report.
+	fmt.Fprintln(os.Stderr, render.SummaryLine(report))
 	logVerbose(fmt.Sprintf("done in %.3fs", time.Since(start).Seconds()))
 
 	// Step 17: Exit code based on --fail-on.

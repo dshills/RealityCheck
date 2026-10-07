@@ -265,12 +265,21 @@ func BuildReport(partial *PartialReport, opts BuildReportOptions) *Report {
 	}
 }
 
+// SummaryLine is the CLI's one-line stderr result, e.g.
+// "realitycheck: verdict=DRIFT_DETECTED score=86 critical=0 warn=2 info=0".
+func SummaryLine(report *Report) string { return render.SummaryLine(report) }
+
+// RenderReport renders report as "json" (the full report; also ""),
+// "agent" (compact JSON with gaps, findings, and next actions), or "md"
+// (Markdown with every coverage row).
 func RenderReport(report *Report, format string) ([]byte, error) {
 	switch format {
 	case "", "json":
 		return render.RenderJSON(report)
 	case "md":
 		return []byte(render.RenderMarkdown(report)), nil
+	case "agent":
+		return render.RenderAgent(report)
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", format)
 	}
