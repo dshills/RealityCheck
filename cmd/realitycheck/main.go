@@ -136,7 +136,7 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.severityThreshold, "severity-threshold", "", "filter findings below this severity from output (INFO|WARN|CRITICAL); does not affect scoring (env: REALITYCHECK_SEVERITY_THRESHOLD)")
 	cmd.Flags().IntVar(&f.maxTokens, "max-tokens", llm.DefaultMaxTokens, "maximum tokens for LLM response (env: REALITYCHECK_LLM_MAX_TOKENS)")
 	cmd.Flags().Float64Var(&f.temperature, "temperature", 0.2, "LLM temperature (env: REALITYCHECK_LLM_TEMPERATURE)")
-	cmd.Flags().StringVar(&f.model, "model", "", "model ID (default varies by provider: claude-opus-4-6 / gpt-4o / gemini-2.0-flash) (env: REALITYCHECK_LLM_MODEL)")
+	cmd.Flags().StringVar(&f.model, "model", "", "model ID (default varies by provider: claude-opus-4-6 / gpt-4o / gemini-2.5-flash) (env: REALITYCHECK_LLM_MODEL)")
 	cmd.Flags().BoolVar(&f.offline, "offline", false, "skip API key pre-flight check; use when operating with an injected mock provider or cached data")
 	cmd.Flags().BoolVar(&f.structuredOutput, "structured-output", true, "constrain model output with the provider's native JSON schema support; disable for models that reject it (env: REALITYCHECK_STRUCTURED_OUTPUT)")
 	cmd.Flags().StringSliceVar(&f.ignore, "ignore", nil, "glob of paths to leave out of the code inventory; repeatable or comma-separated. Without \"/\" it matches any directory or file name (\"generated\", \"*.pb.go\"); with \"/\" it matches a path from the code root (\"internal/gen\") (env: REALITYCHECK_IGNORE)")
