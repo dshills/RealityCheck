@@ -199,10 +199,12 @@ reports when it stopped at `--max-tokens`, and the tool uses that instead of
 guessing from broken JSON. Anthropic requests are streamed, so raising
 `--max-tokens` past the SDK's non-streaming limit works.
 
-OpenAI requests send `--max-tokens` as `max_completion_tokens`. Reasoning
-models accept only their default temperature; when the API rejects
-`--temperature`, the request is retried once without it, and the model's
-default applies (the report's `meta.temperature` still shows the flag value).
+OpenAI requests send `--max-tokens` as `max_completion_tokens`. Some models
+accept no `--temperature`: OpenAI reasoning models take only their default,
+and newer Anthropic models (e.g. `claude-sonnet-5-5`) reject it as deprecated.
+When the API rejects it, the request is retried once without it, and the
+model's default applies (the report's `meta.temperature` still shows the flag
+value). An out-of-range value still fails.
 
 ### Coverage completeness
 

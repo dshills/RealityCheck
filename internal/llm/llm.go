@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 
 	"github.com/dshills/realitycheck/internal/cache"
 	"github.com/dshills/realitycheck/internal/codeindex"
@@ -1036,6 +1039,9 @@ func defaultNewProvider(providerName, model string) (Provider, error) {
 type anthropicProvider struct {
 	client anthropic.Client
 	model  string
+	// noTemperature is set once the model rejects a temperature, so later
+	// calls (such as the repair attempt) omit it instead of failing first.
+	noTemperature atomic.Bool
 }
 
 func newAnthropicProvider(model string) (Provider, error) {
@@ -1086,25 +1092,60 @@ func anthropicParams(model string, req Request) (anthropic.MessageNewParams, err
 // Generate streams the response. The SDK refuses non-streaming requests
 // whose max_tokens implies more than ten minutes of generation (about 21K
 // tokens), and the truncation hint tells users to raise --max-tokens, so
-// streaming keeps that advice actionable.
+// streaming keeps that advice actionable. Newer models reject temperature as
+// deprecated; when the API does, the request is retried once without one.
 func (p *anthropicProvider) Generate(ctx context.Context, req Request) (Response, error) {
 	params, err := anthropicParams(p.model, req)
 	if err != nil {
 		return Response{}, err
 	}
+	if p.noTemperature.Load() {
+		params.Temperature = param.Opt[float64]{}
+	}
+	msg, err := p.stream(ctx, params)
+	if err != nil && params.Temperature.Valid() && anthropicTemperatureRejected(err) {
+		p.noTemperature.Store(true)
+		params.Temperature = param.Opt[float64]{}
+		msg, err = p.stream(ctx, params)
+	}
+	if err != nil {
+		return Response{}, err
+	}
+	return anthropicResponse(msg)
+}
+
+// stream sends one streaming request and accumulates the message.
+func (p *anthropicProvider) stream(ctx context.Context, params anthropic.MessageNewParams) (*anthropic.Message, error) {
 	stream := p.client.Messages.NewStreaming(ctx, params)
 	defer func() { _ = stream.Close() }()
 	var msg anthropic.Message
 	for stream.Next() {
 		if err := msg.Accumulate(stream.Current()); err != nil {
-			return Response{}, fmt.Errorf("anthropic: accumulate stream: %w", err)
+			return nil, fmt.Errorf("anthropic: accumulate stream: %w", err)
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return Response{}, fmt.Errorf("anthropic: messages stream: %w", err)
+		return nil, fmt.Errorf("anthropic: messages stream: %w", err)
 	}
+	return &msg, nil
+}
 
-	return anthropicResponse(&msg)
+// anthropicTemperatureRejected reports whether err is the model refusing any
+// temperature ("`temperature` is deprecated for this model."). The API gives
+// no error code or param, so the message is matched. An out-of-range value
+// fails with a message that names neither and is returned.
+func anthropicTemperatureRejected(err error) bool {
+	var apiErr *anthropic.Error
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	var body anthropic.ErrorResponse
+	if json.Unmarshal([]byte(apiErr.RawJSON()), &body) != nil || body.Error.Type != "invalid_request_error" {
+		return false
+	}
+	msg := strings.ToLower(body.Error.Message)
+	return strings.Contains(msg, "temperature") &&
+		(strings.Contains(msg, "deprecated") || strings.Contains(msg, "not supported") || strings.Contains(msg, "unsupported"))
 }
 
 // anthropicResponse extracts text and truncation. A message cut off at the
