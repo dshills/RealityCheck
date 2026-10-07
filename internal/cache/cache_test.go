@@ -79,10 +79,17 @@ func TestDefaultDir_HonorsXDG(t *testing.T) {
 	if dir, err := DefaultDir(); err != nil || dir != filepath.Join(abs, "realitycheck") {
 		t.Errorf("DefaultDir = %q, %v", dir, err)
 	}
-	// A relative value is ignored, per the XDG spec.
+	// A relative value is ignored, per the XDG spec: the result is the same
+	// as with the variable unset. (On Linux, os.UserCacheDir itself fails
+	// on a relative value, so this also guards the fallback.)
+	t.Setenv("XDG_CACHE_HOME", "")
+	unset, err := DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("XDG_CACHE_HOME", "relative/cache")
-	if dir, err := DefaultDir(); err != nil || !filepath.IsAbs(dir) {
-		t.Errorf("relative XDG_CACHE_HOME: DefaultDir = %q, %v; want an absolute fallback", dir, err)
+	if dir, err := DefaultDir(); err != nil || dir != unset || !filepath.IsAbs(dir) {
+		t.Errorf("relative XDG_CACHE_HOME: DefaultDir = %q, %v; want %q", dir, err, unset)
 	}
 }
 

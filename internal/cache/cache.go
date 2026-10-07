@@ -36,13 +36,28 @@ var entryName = regexp.MustCompile(`^[0-9a-f]{64}\.json$`)
 // XDG spec requires, not absolute.
 func DefaultDir() (string, error) {
 	base := os.Getenv("XDG_CACHE_HOME")
-	if base == "" || !filepath.IsAbs(base) {
+	if !filepath.IsAbs(base) { // unset or relative
 		var err error
-		if base, err = os.UserCacheDir(); err != nil {
+		if base, err = platformCacheDir(); err != nil {
 			return "", fmt.Errorf("cache: locate user cache directory: %w", err)
 		}
 	}
 	return filepath.Join(base, "realitycheck"), nil
+}
+
+// platformCacheDir is os.UserCacheDir without XDG_CACHE_HOME: on Unix,
+// os.UserCacheDir reads that variable itself and fails when it is relative
+// instead of ignoring it, so the fallback there is built directly.
+func platformCacheDir() (string, error) {
+	switch runtime.GOOS {
+	case "windows", "darwin", "ios", "plan9":
+		return os.UserCacheDir() // these ignore XDG_CACHE_HOME
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".cache"), nil
 }
 
 // Open returns the store at dir, creating the directory if needed. Entries
